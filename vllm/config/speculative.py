@@ -558,6 +558,12 @@ class SpeculativeConfig:
       nearest CUDA graph bucket.
     """
 
+    draft_token_acceptance_cudagraph_buckets: list[int] | None = None
+    """Optional list of bucket boundaries for 'cudagraph_aligned' mode.
+    If specified, valid draft lengths are snapped upwards to the nearest
+    bucket in this list. If omitted, resolved from compilation config
+    or defaults to powers of two."""
+
     @staticmethod
     def _acceptance_length_to_rates(length: float, n: int) -> list[float]:
         """Mean acceptance length to unconditional per-position rates, using
@@ -1799,6 +1805,18 @@ class SpeculativeConfig:
                     f"with draft_model or eagle-style speculative methods, "
                     f"got method='{self.method}'"
                 )
+            if self.draft_token_acceptance_cudagraph_buckets is not None:
+                if not self.draft_token_acceptance_cudagraph_buckets:
+                    raise ValueError(
+                        "draft_token_acceptance_cudagraph_buckets cannot be empty "
+                        "when provided."
+                    )
+                if any(b <= 0 for b in self.draft_token_acceptance_cudagraph_buckets):
+                    raise ValueError(
+                        "All buckets in draft_token_acceptance_cudagraph_buckets "
+                        "must be positive integers, got "
+                        f"{self.draft_token_acceptance_cudagraph_buckets}"
+                    )
 
         if self.draft_model_config:
             self.draft_model_config.verify_with_parallel_config(

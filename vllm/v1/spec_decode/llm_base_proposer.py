@@ -521,6 +521,28 @@ class SpecDecodeBaseProposer:
         self._last_num_valid_draft_tokens = None
         return ret
 
+    def _resolve_cudagraph_buckets(self) -> list[int] | None:
+        """Resolve CUDA graph bucket sizes for 'cudagraph_aligned' mode.
+
+        Prefers explicitly configured buckets in speculative config, falls back
+        to valid sizes <= num_speculative_tokens from compilation config's
+        cudagraph_capture_sizes, or returns None to use default powers-of-two.
+        """
+        if self.speculative_config.draft_token_acceptance_cudagraph_buckets:
+            return sorted(
+                set(self.speculative_config.draft_token_acceptance_cudagraph_buckets)
+            )
+        capture_sizes = getattr(
+            self.compilation_config, "cudagraph_capture_sizes", None
+        )
+        if capture_sizes:
+            valid_sizes = sorted(
+                {s for s in capture_sizes if 0 < s <= self.num_speculative_tokens}
+            )
+            if valid_sizes:
+                return valid_sizes
+        return None
+
     def _sample_draft_tokens_with_confidence(
         self,
         hidden_states: torch.Tensor,
@@ -707,6 +729,7 @@ class SpecDecodeBaseProposer:
                     confidences,
                     self.draft_token_acceptance_threshold,
                     mode=self.draft_token_acceptance_mode,
+                    cudagraph_buckets=self._resolve_cudagraph_buckets(),
                 )
                 self._last_num_valid_draft_tokens = num_valid
                 draft_token_ids = draft_token_ids.view(
@@ -868,6 +891,7 @@ class SpecDecodeBaseProposer:
                 confidences,
                 self.draft_token_acceptance_threshold,
                 mode=self.draft_token_acceptance_mode,
+                cudagraph_buckets=self._resolve_cudagraph_buckets(),
             )
             self._last_num_valid_draft_tokens = num_valid
             draft_token_ids.masked_fill_(~valid_mask, -1)

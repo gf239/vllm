@@ -82,6 +82,7 @@ SpeculativeMethod = Literal[
 ]
 RejectionSampleMethod = Literal["standard", "synthetic", "block"]
 DraftSampleMethod = Literal["greedy", "probabilistic"]
+AdaptiveProposalMode = Literal["token_threshold", "cumulative", "cudagraph_aligned"]
 
 _QWEN3_OMNI_TARGET_ARCHITECTURES = frozenset(
     {
@@ -539,6 +540,32 @@ class SpeculativeConfig:
     enable_adaptive_verification: bool = False
     """Whether to adaptively size the draft-verification budget from per-request
     confidence. Currently only supported for method="dspark"."""
+
+    draft_token_acceptance_threshold: float | None = None
+    """Minimum confidence threshold for draft tokens to be submitted for verification.
+    If set, draft tokens with confidence below this threshold are truncated
+    per-request, establishing per-request effective proposal lengths (RFC #48202)
+    across speculative decoding methods (EAGLE, DraftModel, MTP, etc.). Value must
+    be in [0.0, 1.0]."""
+
+    draft_token_acceptance_mode: AdaptiveProposalMode = "token_threshold"
+    """Strategy for evaluating draft confidence and determining proposal length:
+    - 'token_threshold' (default): Evaluates marginal per-token probabilities
+      (p_i >= threshold). Preserves strong prefix chains without compounding
+      geometric decay.
+    - 'cumulative': Evaluates cumulative joint prefix survival probability
+      (prod(p_1..p_i) >= threshold). Note that cumulative probability decays
+      geometrically with proposal depth (e.g. 0.75^7 ≈ 0.13), making this mode
+      aggressive by construction.
+    - 'cudagraph_aligned': Cumulative joint survival snapped upwards to
+      nearest CUDA graph bucket.
+    """
+
+    draft_token_acceptance_cudagraph_buckets: list[int] | None = None
+    """Optional list of bucket boundaries for 'cudagraph_aligned' mode.
+    If specified, valid draft lengths are snapped upwards to the nearest
+    bucket in this list. If omitted, resolved from compilation config
+    or defaults to powers of two."""
 
     @staticmethod
     def _acceptance_length_to_rates(length: float, n: int) -> list[float]:
@@ -1757,6 +1784,43 @@ class SpeculativeConfig:
                 "are only valid with rejection_sample_method='synthetic'."
             )
 
+        if self.draft_token_acceptance_threshold is not None:
+            if not (0.0 <= self.draft_token_acceptance_threshold <= 1.0):
+                raise ValueError(
+                    "draft_token_acceptance_threshold must be between 0.0 and 1.0, "
+                    f"got {self.draft_token_acceptance_threshold}"
+                )
+            valid_modes = ("token_threshold", "cumulative", "cudagraph_aligned")
+            if self.draft_token_acceptance_mode not in valid_modes:
+                raise ValueError(
+                    f"draft_token_acceptance_mode must be one of {valid_modes}, "
+                    f"got {self.draft_token_acceptance_mode}"
+                )
+            if self.use_local_argmax_reduction:
+                raise ValueError(
+                    "draft_token_acceptance_threshold cannot be used with "
+                    "use_local_argmax_reduction because confidence estimation "
+                    "requires draft probability calculation."
+                )
+            if not (self.use_eagle() or self.uses_draft_model()):
+                raise ValueError(
+                    "draft_token_acceptance_threshold is currently only supported "
+                    f"with draft_model or eagle-style speculative methods, "
+                    f"got method='{self.method}'"
+                )
+            if self.draft_token_acceptance_cudagraph_buckets is not None:
+                if not self.draft_token_acceptance_cudagraph_buckets:
+                    raise ValueError(
+                        "draft_token_acceptance_cudagraph_buckets cannot be empty "
+                        "when provided."
+                    )
+                if any(b <= 0 for b in self.draft_token_acceptance_cudagraph_buckets):
+                    raise ValueError(
+                        "All buckets in draft_token_acceptance_cudagraph_buckets "
+                        "must be positive integers, got "
+                        f"{self.draft_token_acceptance_cudagraph_buckets}"
+                    )
+
         if self.draft_model_config:
             self.draft_model_config.verify_with_parallel_config(
                 self.draft_parallel_config
@@ -1870,6 +1934,9 @@ class SpeculativeConfig:
 
     def uses_dynamic_speculative_decoding(self) -> bool:
         return self.num_speculative_tokens_per_batch_size is not None
+
+    def uses_adaptive_proposal_length(self) -> bool:
+        return self.draft_token_acceptance_threshold is not None
 
     def uses_draft_model(self) -> bool:
         return self.method == "draft_model"

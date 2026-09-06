@@ -529,6 +529,97 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         self.assertEqual(valid_mask_fp16.tolist(), [[True, True]])
 
 
+    def test_speculative_config_cudagraph_buckets_validation(self):
+        """Test validation of draft_token_acceptance_cudagraph_buckets."""
+        # Valid buckets
+        cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+        cfg.method = "draft_model"
+        cfg.draft_token_acceptance_threshold = 0.5
+        cfg.draft_token_acceptance_mode = "cudagraph_aligned"
+        cfg.draft_token_acceptance_cudagraph_buckets = [1, 2, 4]
+        cfg.use_local_argmax_reduction = False
+        cfg.tensor_parallel_size = None
+        cfg.num_speculative_tokens = 4
+        cfg.rejection_sample_method = "standard"
+        cfg.synthetic_acceptance_rates = None
+        cfg.synthetic_acceptance_length = None
+        cfg.draft_model_config = None
+        cfg.use_heterogeneous_vocab = False
+        cfg._verify_args()
+
+        # Empty bucket list raises ValueError
+        with self.assertRaises(ValueError):
+            cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+            cfg.method = "draft_model"
+            cfg.draft_token_acceptance_threshold = 0.5
+            cfg.draft_token_acceptance_mode = "cudagraph_aligned"
+            cfg.draft_token_acceptance_cudagraph_buckets = []
+            cfg.use_local_argmax_reduction = False
+            cfg.tensor_parallel_size = None
+            cfg.num_speculative_tokens = 4
+            cfg.rejection_sample_method = "standard"
+            cfg.synthetic_acceptance_rates = None
+            cfg.synthetic_acceptance_length = None
+            cfg.draft_model_config = None
+            cfg.use_heterogeneous_vocab = False
+            cfg._verify_args()
+
+        # Non-positive bucket raises ValueError
+        with self.assertRaises(ValueError):
+            cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+            cfg.method = "draft_model"
+            cfg.draft_token_acceptance_threshold = 0.5
+            cfg.draft_token_acceptance_mode = "cudagraph_aligned"
+            cfg.draft_token_acceptance_cudagraph_buckets = [2, 0, 4]
+            cfg.use_local_argmax_reduction = False
+            cfg.tensor_parallel_size = None
+            cfg.num_speculative_tokens = 4
+            cfg.rejection_sample_method = "standard"
+            cfg.synthetic_acceptance_rates = None
+            cfg.synthetic_acceptance_length = None
+            cfg.draft_model_config = None
+            cfg.use_heterogeneous_vocab = False
+            cfg._verify_args()
+
+    def test_proposer_resolve_cudagraph_buckets(self):
+        """Test SpecDecodeBaseProposer._resolve_cudagraph_buckets resolution
+        hierarchy."""
+        from vllm.v1.spec_decode.llm_base_proposer import SpecDecodeBaseProposer
+
+        # 1. Resolves from speculative_config if explicitly configured
+        proposer = SpecDecodeBaseProposer.__new__(SpecDecodeBaseProposer)
+        proposer.speculative_config = SimpleNamespace(
+            draft_token_acceptance_cudagraph_buckets=[4, 2, 2, 1]
+        )
+        proposer.compilation_config = SimpleNamespace(
+            cudagraph_capture_sizes=[8, 16]
+        )
+        proposer.num_speculative_tokens = 4
+        self.assertEqual(proposer._resolve_cudagraph_buckets(), [1, 2, 4])
+
+        # 2. Falls back to compilation_config.cudagraph_capture_sizes <= K
+        proposer = SpecDecodeBaseProposer.__new__(SpecDecodeBaseProposer)
+        proposer.speculative_config = SimpleNamespace(
+            draft_token_acceptance_cudagraph_buckets=None
+        )
+        proposer.compilation_config = SimpleNamespace(
+            cudagraph_capture_sizes=[1, 2, 4, 8, 16]
+        )
+        proposer.num_speculative_tokens = 3
+        self.assertEqual(proposer._resolve_cudagraph_buckets(), [1, 2])
+
+        # 3. Falls back to None if no capture sizes match
+        proposer = SpecDecodeBaseProposer.__new__(SpecDecodeBaseProposer)
+        proposer.speculative_config = SimpleNamespace(
+            draft_token_acceptance_cudagraph_buckets=None
+        )
+        proposer.compilation_config = SimpleNamespace(
+            cudagraph_capture_sizes=[8, 16]
+        )
+        proposer.num_speculative_tokens = 3
+        self.assertIsNone(proposer._resolve_cudagraph_buckets())
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -16,6 +16,7 @@ In current speculative decoding setups with draft models (Eagle, DraftModel, MTP
      - `"token_threshold"`: Evaluates marginal per-token probabilities ($p_i \ge \tau$).
      - `"cumulative"`: Evaluates joint prefix survival probability ($\prod_{j=1}^i p_j \ge \tau$).
      - `"cudagraph_aligned"`: Joint prefix survival snapped up to the nearest CUDA graph bucket boundary for zero marginal verification overhead.
+   - Added `draft_token_acceptance_cudagraph_buckets: list[int] | None = None` to allow explicitly configuring target CUDA graph buckets.
    - Added `uses_adaptive_proposal_length() -> bool` helper.
    - Enforced mutual exclusion with `use_local_argmax_reduction` in `_verify_args()` to prevent missing logits errors.
 
@@ -26,7 +27,8 @@ In current speculative decoding setups with draft models (Eagle, DraftModel, MTP
 
 3. **`LLMBaseProposer` (`vllm/v1/spec_decode/llm_base_proposer.py`)**:
    - Unified logits and confidence computation in `_sample_draft_tokens_with_confidence()`: for greedy draft generation, computes `compute_logits()` strictly once and extracts both token IDs and confidence probabilities simultaneously from `probs.max(dim=-1)`, eliminating redundant GEMM passes.
-   - Computed `num_valid_draft_tokens` tensor (`[batch_size]`) and masked invalid draft tokens with `-1`.
+   - Implemented `_resolve_cudagraph_buckets()` to dynamically resolve real graph buckets from `speculative_config.draft_token_acceptance_cudagraph_buckets` or `compilation_config.cudagraph_capture_sizes`, passing them through to both `compute_adaptive_valid_draft_tokens()` call sites.
+   - Computed `num_valid_draft_tokens` tensor (`[batch_size]`) and masked invalid draft tokens with `-1` using in-place `masked_fill_`.
    - Exposed `take_last_num_valid_draft_tokens()`.
 
 4. **`GPUModelRunner` (`vllm/v1/worker/gpu_model_runner.py`)**:
@@ -36,8 +38,10 @@ In current speculative decoding setups with draft models (Eagle, DraftModel, MTP
    - Sanitized draft tokens in `_get_draft_token_ids_cpu()` to filter out negative masked tokens (`[t for t in tokens if t >= 0]`), protecting CPU scheduler token accounting and grammar validation (guided decoding) from invalid token IDs.
 
 5. **Testing (`tests/v1/spec_decode/test_adaptive_proposal_length.py`)**:
-   - Added 14 comprehensive unit tests covering:
+   - Added 16 comprehensive unit tests covering:
      - Valid and invalid threshold / mode configuration bounds.
+     - Validation of `draft_token_acceptance_cudagraph_buckets` (positive values, non-empty).
+     - Proposer resolution hierarchy of `cudagraph_buckets` across speculative and compilation configs.
      - Mutual exclusion between adaptive thresholding and `use_local_argmax_reduction`.
      - Strict validation rejecting unsupported speculative methods (`ngram`, `medusa`, `mlp_speculator`, `suffix`).
      - Correctness of `"token_threshold"`, `"cumulative"`, and `"cudagraph_aligned"` modes.

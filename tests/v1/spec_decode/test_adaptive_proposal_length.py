@@ -315,9 +315,7 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         mock_model.compute_logits.assert_called_once()
         self.assertEqual(draft_token_ids.tolist(), [2])
         self.assertIsNone(draft_probs)
-        expected_prob = torch.softmax(
-            torch.tensor([1.0, 2.0, 3.0]), dim=-1
-        )[2].item()
+        expected_prob = torch.softmax(torch.tensor([1.0, 2.0, 3.0]), dim=-1)[2].item()
         self.assertAlmostEqual(confidences.item(), expected_prob, places=4)
 
         # When threshold is None, confidence tracking is bypassed
@@ -334,7 +332,34 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         self.assertIsNone(confidences)
         self.assertEqual(draft_token_ids.tolist(), [2])
 
+    def test_get_draft_token_ids_cpu_strips_negative_tokens(self):
+        """Test that _get_draft_token_ids_cpu strips negative (masked) tokens so that
+        the CPU scheduler and grammar verifier never encounter invalid -1 IDs."""
+        from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+
+        runner = GPUModelRunner.__new__(GPUModelRunner)
+        runner.draft_token_ids_event = MagicMock()
+
+        # Case 1: draft_token_ids is a torch.Tensor on CPU buffer with -1 padding
+        runner._draft_token_ids = torch.tensor(
+            [[101, 102, -1], [201, -1, -1]], dtype=torch.int64
+        )
+        runner._draft_token_req_ids = ["req_0", "req_1"]
+        runner.draft_token_ids_cpu = torch.tensor(
+            [[101, 102, -1], [201, -1, -1]], dtype=torch.int64
+        )
+        draft_tokens, req_ids = runner._get_draft_token_ids_cpu()
+        runner.draft_token_ids_event.synchronize.assert_called_once()
+        self.assertEqual(req_ids, ["req_0", "req_1"])
+        self.assertEqual(draft_tokens, [[101, 102], [201]])
+
+        # Case 2: draft_token_ids is a python list with -1 values
+        runner._draft_token_ids = [[301, -1], [-1, -1]]
+        runner.input_batch = SimpleNamespace(req_ids=["req_2", "req_3"])
+        draft_tokens_list, req_ids_list = runner._get_draft_token_ids_cpu()
+        self.assertEqual(req_ids_list, ["req_2", "req_3"])
+        self.assertEqual(draft_tokens_list, [[301], []])
+
 
 if __name__ == "__main__":
     unittest.main()
-

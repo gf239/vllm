@@ -38,7 +38,7 @@ In current speculative decoding setups with draft models (Eagle, DraftModel, MTP
    - Sanitized draft tokens in `_get_draft_token_ids_cpu()` to filter out negative masked tokens (`[t for t in tokens if t >= 0]`), protecting CPU scheduler token accounting and grammar validation (guided decoding) from invalid token IDs.
 
 5. **Testing (`tests/v1/spec_decode/test_adaptive_proposal_length.py`)**:
-   - Added 16 comprehensive unit tests covering:
+   - Added 17 comprehensive unit tests covering:
      - Valid and invalid threshold / mode configuration bounds.
      - Validation of `draft_token_acceptance_cudagraph_buckets` (positive values, non-empty).
      - Proposer resolution hierarchy of `cudagraph_buckets` across speculative and compilation configs.

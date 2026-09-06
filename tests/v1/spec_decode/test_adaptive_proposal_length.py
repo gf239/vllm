@@ -619,6 +619,30 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         proposer.num_speculative_tokens = 3
         self.assertIsNone(proposer._resolve_cudagraph_buckets())
 
+    def test_proposer_cudagraph_aligned_snapping_with_resolved_buckets(self):
+        """Test that cudagraph_aligned mode snaps according to resolved buckets."""
+        from vllm.v1.spec_decode.llm_base_proposer import SpecDecodeBaseProposer
+
+        proposer = SpecDecodeBaseProposer.__new__(SpecDecodeBaseProposer)
+        proposer.speculative_config = SimpleNamespace(
+            draft_token_acceptance_cudagraph_buckets=[2, 4]
+        )
+        proposer.compilation_config = SimpleNamespace(cudagraph_capture_sizes=[])
+        proposer.num_speculative_tokens = 4
+        buckets = proposer._resolve_cudagraph_buckets()
+
+        # Confidences where base valid count is 1
+        conf = torch.tensor([[0.9, 0.4, 0.4, 0.4]], dtype=torch.float32)
+        num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
+            conf,
+            threshold=0.5,
+            mode="cudagraph_aligned",
+            cudagraph_buckets=buckets,
+        )
+        # base_k = 1 snaps up to bucket 2
+        self.assertEqual(num_valid.tolist(), [2])
+        self.assertEqual(valid_mask.tolist(), [[True, True, False, False]])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -94,6 +94,9 @@ class SpecDecodeBaseProposer:
         self.draft_token_acceptance_threshold = (
             self.speculative_config.draft_token_acceptance_threshold
         )
+        self.draft_token_acceptance_mode = (
+            self.speculative_config.draft_token_acceptance_mode
+        )
         self._last_num_valid_draft_tokens: torch.Tensor | None = None
 
         # We need to get the hidden size from the draft model config because
@@ -675,7 +678,9 @@ class SpecDecodeBaseProposer:
             if self.draft_token_acceptance_threshold is not None and confidences is not None:
                 confidences = confidences.view(-1, self.num_speculative_tokens)
                 num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
-                    confidences, self.draft_token_acceptance_threshold
+                    confidences,
+                    self.draft_token_acceptance_threshold,
+                    mode=self.draft_token_acceptance_mode,
                 )
                 self._last_num_valid_draft_tokens = num_valid
                 draft_token_ids = draft_token_ids.view(
@@ -836,7 +841,9 @@ class SpecDecodeBaseProposer:
         ):
             confidences = torch.stack(draft_confidences_list, dim=1)
             num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
-                confidences, self.draft_token_acceptance_threshold
+                confidences,
+                self.draft_token_acceptance_threshold,
+                mode=self.draft_token_acceptance_mode,
             )
             self._last_num_valid_draft_tokens = num_valid
             draft_token_ids = draft_token_ids.masked_fill(~valid_mask, -1)

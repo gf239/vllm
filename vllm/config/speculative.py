@@ -82,6 +82,7 @@ SpeculativeMethod = Literal[
 ]
 RejectionSampleMethod = Literal["standard", "synthetic", "block"]
 DraftSampleMethod = Literal["greedy", "probabilistic"]
+AdaptiveProposalMode = Literal["token_threshold", "cumulative", "cudagraph_aligned"]
 
 _QWEN3_OMNI_TARGET_ARCHITECTURES = frozenset(
     {
@@ -545,6 +546,13 @@ class SpeculativeConfig:
     If set, draft tokens with confidence below this threshold are truncated per-request,
     establishing per-request effective proposal lengths (RFC #48202) across speculative
     decoding methods (EAGLE, DraftModel, MTP, etc.). Value must be in [0.0, 1.0]."""
+
+    draft_token_acceptance_mode: AdaptiveProposalMode = "cumulative"
+    """Strategy for evaluating draft confidence and determining proposal length:
+    - 'token_threshold': Evaluates marginal per-token probabilities (p_i >= threshold).
+    - 'cumulative': Evaluates cumulative joint survival probability (prod(p_1..p_i) >= threshold).
+    - 'cudagraph_aligned': Cumulative joint survival snapped upwards to nearest CUDA graph bucket.
+    """
 
     @staticmethod
     def _acceptance_length_to_rates(length: float, n: int) -> list[float]:
@@ -1768,6 +1776,12 @@ class SpeculativeConfig:
                 raise ValueError(
                     "draft_token_acceptance_threshold must be between 0.0 and 1.0, "
                     f"got {self.draft_token_acceptance_threshold}"
+                )
+            valid_modes = ("token_threshold", "cumulative", "cudagraph_aligned")
+            if self.draft_token_acceptance_mode not in valid_modes:
+                raise ValueError(
+                    f"draft_token_acceptance_mode must be one of {valid_modes}, "
+                    f"got {self.draft_token_acceptance_mode}"
                 )
 
         if self.draft_model_config:

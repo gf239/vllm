@@ -525,24 +525,35 @@ class SpecDecodeBaseProposer:
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-        draft_token_ids, draft_probs = self._sample_draft_tokens(
-            hidden_states, sampling_metadata
-        )
         if self.draft_token_acceptance_threshold is None:
+            draft_token_ids, draft_probs = self._sample_draft_tokens(
+                hidden_states, sampling_metadata
+            )
             return draft_token_ids, draft_probs, None
 
-        if draft_probs is not None:
-            confidences = draft_probs.gather(-1, draft_token_ids.unsqueeze(-1)).squeeze(
-                -1
+        if self._enable_probabilistic_draft_probs and not sampling_metadata.all_greedy:
+            draft_token_ids, draft_probs = self._sample_draft_tokens(
+                hidden_states, sampling_metadata
             )
-        else:
-            logits = self.model.compute_logits(hidden_states)
-            if self.use_heterogeneous_vocab and self.vocab_mapping is not None:
-                logits = self.vocab_mapping.constrain_draft_logits(logits)
-            probs = torch.softmax(logits, dim=-1)
-            confidences = probs.max(dim=-1).values
+            if draft_probs is not None:
+                confidences = draft_probs.gather(
+                    -1, draft_token_ids.unsqueeze(-1)
+                ).squeeze(-1)
+            else:
+                confidences = None
+            return draft_token_ids, draft_probs, confidences
 
-        return draft_token_ids, draft_probs, confidences
+        # Greedy path: compute logits once to avoid duplicate lm_head matmul.
+        logits = self.model.compute_logits(hidden_states)
+        if self.use_heterogeneous_vocab and self.vocab_mapping is not None:
+            logits = self.vocab_mapping.constrain_draft_logits(logits)
+        probs = torch.softmax(logits, dim=-1)
+        confidences, draft_token_ids = probs.max(dim=-1)
+        if self.use_heterogeneous_vocab and self.vocab_mapping is not None:
+            draft_token_ids = self.vocab_mapping.map_draft_to_target_ids(
+                draft_token_ids
+            )
+        return draft_token_ids, None, confidences
 
     def propose(
         self,

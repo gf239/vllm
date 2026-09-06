@@ -79,6 +79,21 @@ class TestAdaptiveProposalLength(unittest.TestCase):
             cfg.use_heterogeneous_vocab = False
             cfg._verify_args()
 
+        # Incompatible with use_local_argmax_reduction
+        with self.assertRaises(ValueError):
+            cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+            cfg.draft_token_acceptance_threshold = 0.5
+            cfg.draft_token_acceptance_mode = "cumulative"
+            cfg.use_local_argmax_reduction = True
+            cfg.tensor_parallel_size = None
+            cfg.num_speculative_tokens = 3
+            cfg.rejection_sample_method = "standard"
+            cfg.synthetic_acceptance_rates = None
+            cfg.synthetic_acceptance_length = None
+            cfg.draft_model_config = None
+            cfg.use_heterogeneous_vocab = False
+            cfg._verify_args()
+
     def test_speculative_config_mode_validation(self):
         """Test validation of draft_token_acceptance_mode in SpeculativeConfig."""
         for valid_mode in ["token_threshold", "cumulative", "cudagraph_aligned"]:
@@ -270,6 +285,56 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         # 12 - 5 = 7 tokens remaining
         self.assertEqual(scheduler_output.total_num_scheduled_tokens, 7)
 
+    def test_sample_draft_tokens_with_confidence(self):
+        """Test draft token sampling with confidence and ensure single logits
+        evaluation."""
+        from vllm.v1.spec_decode.llm_base_proposer import SpecDecodeBaseProposer
+
+        proposer = SpecDecodeBaseProposer.__new__(SpecDecodeBaseProposer)
+        proposer.draft_token_acceptance_threshold = 0.5
+        proposer._enable_probabilistic_draft_probs = False
+        proposer.use_heterogeneous_vocab = False
+        proposer.vocab_mapping = None
+        proposer.use_local_argmax_reduction = False
+
+        mock_model = MagicMock()
+        mock_model.compute_logits.return_value = torch.tensor(
+            [[1.0, 2.0, 3.0]], dtype=torch.float32
+        )
+        proposer.model = mock_model
+
+        sampling_metadata = SimpleNamespace(all_greedy=True)
+        hidden_states = torch.empty((1, 16), dtype=torch.float32)
+
+        draft_token_ids, draft_probs, confidences = (
+            proposer._sample_draft_tokens_with_confidence(
+                hidden_states, sampling_metadata
+            )
+        )
+
+        mock_model.compute_logits.assert_called_once()
+        self.assertEqual(draft_token_ids.tolist(), [2])
+        self.assertIsNone(draft_probs)
+        expected_prob = torch.softmax(
+            torch.tensor([1.0, 2.0, 3.0]), dim=-1
+        )[2].item()
+        self.assertAlmostEqual(confidences.item(), expected_prob, places=4)
+
+        # When threshold is None, confidence tracking is bypassed
+        proposer.draft_token_acceptance_threshold = None
+        mock_model.reset_mock()
+        mock_model.compute_logits.return_value = torch.tensor(
+            [[1.0, 2.0, 3.0]], dtype=torch.float32
+        )
+        draft_token_ids, draft_probs, confidences = (
+            proposer._sample_draft_tokens_with_confidence(
+                hidden_states, sampling_metadata
+            )
+        )
+        self.assertIsNone(confidences)
+        self.assertEqual(draft_token_ids.tolist(), [2])
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -21,6 +21,7 @@ In current speculative decoding setups with draft models (Eagle, DraftModel, MTP
 
 2. **`vllm.v1.spec_decode.utils` (`vllm/v1/spec_decode/utils.py`)**:
    - Implemented `compute_adaptive_valid_draft_tokens(confidences, threshold, mode="cumulative", cudagraph_buckets=None)` to compute per-request valid draft counts and boolean mask using vectorized GPU logic without host-device synchronization.
+   - Promoted `confidences` to `float32` and clamped to `[0.0, 1.0]` to guarantee IEEE 754 precision and prevent `bfloat16`/`float16` rounding drift or underflow during cumulative probability multiplications.
    - Mode `"cudagraph_aligned"` employs pure scalar broadcasting in `torch.where` to avoid runtime GPU memory allocations during bucket snapping.
 
 3. **`LLMBaseProposer` (`vllm/v1/spec_decode/llm_base_proposer.py`)**:
@@ -35,11 +36,12 @@ In current speculative decoding setups with draft models (Eagle, DraftModel, MTP
    - Sanitized draft tokens in `_get_draft_token_ids_cpu()` to filter out negative masked tokens (`[t for t in tokens if t >= 0]`), protecting CPU scheduler token accounting and grammar validation (guided decoding) from invalid token IDs.
 
 5. **Testing (`tests/v1/spec_decode/test_adaptive_proposal_length.py`)**:
-   - Added 13 comprehensive unit tests covering:
+   - Added 14 comprehensive unit tests covering:
      - Valid and invalid threshold / mode configuration bounds.
      - Mutual exclusion between adaptive thresholding and `use_local_argmax_reduction`.
      - Strict validation rejecting unsupported speculative methods (`ngram`, `medusa`, `mlp_speculator`, `suffix`).
      - Correctness of `"token_threshold"`, `"cumulative"`, and `"cudagraph_aligned"` modes.
+     - `bfloat16` and `float16` precision stability preventing cumulative underflow / truncation drift.
      - Device tensor caching and zero runtime GPU allocations during bucket snapping.
      - Graceful fallback for empty, negative, or out-of-range CUDA graph buckets.
      - Extreme boundary thresholds ($\tau = 0.0$, $\tau = 1.0$) and all-zero probability matrices.

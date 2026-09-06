@@ -671,6 +671,9 @@ def compute_adaptive_valid_draft_tokens(
         )
 
     num_spec_tokens = confidences.shape[1]
+    # Guarantee full float32 precision to prevent bfloat16/float16 rounding drift
+    # during cumulative probability multiplication, and clamp to [0.0, 1.0].
+    confidences = confidences.float().clamp(0.0, 1.0)
 
     if mode == "token_threshold":
         is_confident = confidences >= threshold

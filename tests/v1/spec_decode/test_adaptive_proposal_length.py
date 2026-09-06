@@ -508,6 +508,27 @@ class TestAdaptiveProposalLength(unittest.TestCase):
             ],
         )
 
+    def test_bfloat16_and_float16_precision_stability(self):
+        """Test that bfloat16 and float16 inputs are promoted to float32 without
+        precision underflow or truncation drift."""
+        # With threshold = 0.719, bfloat16 truncation would erroneously reject token 1,
+        # but promoting to float32 correctly accepts it.
+        conf_bf16 = torch.tensor([[0.9, 0.8]], dtype=torch.bfloat16)
+        num_valid_bf16, valid_mask_bf16 = compute_adaptive_valid_draft_tokens(
+            conf_bf16, threshold=0.719, mode="cumulative"
+        )
+        self.assertEqual(num_valid_bf16.tolist(), [2])
+        self.assertEqual(valid_mask_bf16.tolist(), [[True, True]])
+
+        # Test float16
+        conf_fp16 = torch.tensor([[0.9, 0.8]], dtype=torch.float16)
+        num_valid_fp16, valid_mask_fp16 = compute_adaptive_valid_draft_tokens(
+            conf_fp16, threshold=0.719, mode="cumulative"
+        )
+        self.assertEqual(num_valid_fp16.tolist(), [2])
+        self.assertEqual(valid_mask_fp16.tolist(), [[True, True]])
+
 
 if __name__ == "__main__":
     unittest.main()
+

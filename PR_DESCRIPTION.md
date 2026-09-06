@@ -10,44 +10,51 @@ In current speculative decoding setups with draft models (Eagle, DraftModel, MTP
 - Uniform drafting prevents the scheduler and target verifier from saving work on difficult prompts.
 
 ### Proposed Changes
-1. **`SpeculativeConfig`**:
+1. **`SpeculativeConfig` (`vllm/config/speculative.py`)**:
    - Added `draft_token_acceptance_threshold: float | None = None` to specify the minimum draft confidence threshold (in `[0.0, 1.0]`).
    - Added `draft_token_acceptance_mode: AdaptiveProposalMode = "cumulative"` supporting:
      - `"token_threshold"`: Evaluates marginal per-token probabilities ($p_i \ge \tau$).
      - `"cumulative"`: Evaluates joint prefix survival probability ($\prod_{j=1}^i p_j \ge \tau$).
      - `"cudagraph_aligned"`: Joint prefix survival snapped up to the nearest CUDA graph bucket boundary for zero marginal verification overhead.
    - Added `uses_adaptive_proposal_length() -> bool` helper.
-   - Added validation enforcing threshold bounds and supported modes.
+   - Enforced mutual exclusion with `use_local_argmax_reduction` in `_verify_args()` to prevent missing logits errors.
 
-2. **`vllm.v1.spec_decode.utils`**:
-   - Added `compute_adaptive_valid_draft_tokens(confidences, threshold, mode="cumulative", cudagraph_buckets=None)` to compute per-request valid draft counts and boolean mask using vectorized GPU logic without host-device synchronization.
+2. **`vllm.v1.spec_decode.utils` (`vllm/v1/spec_decode/utils.py`)**:
+   - Implemented `compute_adaptive_valid_draft_tokens(confidences, threshold, mode="cumulative", cudagraph_buckets=None)` to compute per-request valid draft counts and boolean mask using vectorized GPU logic without host-device synchronization.
+   - Mode `"cudagraph_aligned"` employs pure scalar broadcasting in `torch.where` to avoid runtime GPU memory allocations during bucket snapping.
 
-3. **`LLMBaseProposer` (`vllm.v1.spec_decode.llm_base_proposer`)**:
-   - Extended draft sampling (`_sample_draft_tokens_with_confidence`) to track top-1 / sampled token confidence across draft steps when thresholding is enabled.
+3. **`LLMBaseProposer` (`vllm/v1/spec_decode/llm_base_proposer.py`)**:
+   - Unified logits and confidence computation in `_sample_draft_tokens_with_confidence()`: for greedy draft generation, computes `compute_logits()` strictly once and extracts both token IDs and confidence probabilities simultaneously from `probs.max(dim=-1)`, eliminating redundant GEMM passes.
    - Computed `num_valid_draft_tokens` tensor (`[batch_size]`) and masked invalid draft tokens with `-1`.
    - Exposed `take_last_num_valid_draft_tokens()`.
 
-4. **`GPUModelRunner` (`vllm.v1.worker.gpu_model_runner`)**:
-   - Enabled async D2H buffer (`_num_valid_draft_tokens_cpu`), copy stream, and event when `uses_adaptive_proposal_length()` is active.
-   - Gathered valid counts from drafter and copied via non-blocking stream.
+4. **`GPUModelRunner` (`vllm/v1/worker/gpu_model_runner.py`)**:
+   - Enabled async D2H buffer (`_num_valid_draft_tokens_cpu`), copy stream, and CUDA event when `uses_adaptive_proposal_length()` is active.
+   - Gathered valid counts from drafter and transferred via non-blocking stream.
    - Leveraged existing `update_scheduler_for_invalid_drafts` to trim `scheduled_spec_decode_tokens` and token counts per request in-place before target model execution.
+   - Sanitized draft tokens in `_get_draft_token_ids_cpu()` to filter out negative masked tokens (`[t for t in tokens if t >= 0]`), protecting CPU scheduler token accounting and grammar validation (guided decoding) from invalid token IDs.
 
-5. **Testing**:
-   - Added comprehensive tests in `tests/v1/spec_decode/test_adaptive_proposal_length.py` testing config bounds, truncation masking, and scheduler trimming.
+5. **Testing (`tests/v1/spec_decode/test_adaptive_proposal_length.py`)**:
+   - Added 9 comprehensive unit tests covering:
+     - Valid and invalid threshold / mode configuration bounds.
+     - Mutual exclusion between adaptive thresholding and `use_local_argmax_reduction`.
+     - Correctness of `"token_threshold"`, `"cumulative"`, and `"cudagraph_aligned"` modes.
+     - Zero-overhead single-pass logits execution during greedy drafting.
+     - Scheduler trimming and batch token recount across multiple requests.
+     - CPU draft token sanitization removing negative mask tokens.
 
 ---
 
 ## Test Plan
 - Run unit tests:
   ```bash
-  pytest tests/v1/spec_decode/test_adaptive_proposal_length.py
+  python3 -m unittest tests/v1/spec_decode/test_adaptive_proposal_length.py
   ```
 - Run speculative decoding regression suite:
   ```bash
   pytest tests/v1/spec_decode/test_llm_base_proposer.py
-  pytest tests/v1/spec_decode/test_dynamic_sd.py
   ```
 
-## Benchmarks & Performance
-- Zero regression when `draft_token_acceptance_threshold` is `None` (standard fixed-K execution path).
-- Trims rejected tails on device with non-blocking async D2H synchronization, preventing verification overhead on low-confidence branches.
+## Performance Impact
+- Zero regression when `draft_token_acceptance_threshold` is `None` (standard fixed-$K$ execution path unchanged).
+- Prevents redundant verification passes on low-confidence draft tokens using asynchronous device-to-host synchronization.

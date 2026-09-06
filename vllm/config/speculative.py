@@ -540,6 +540,12 @@ class SpeculativeConfig:
     """Whether to adaptively size the draft-verification budget from per-request
     confidence. Currently only supported for method="dspark"."""
 
+    draft_token_acceptance_threshold: float | None = None
+    """Minimum confidence threshold for draft tokens to be submitted for verification.
+    If set, draft tokens with confidence below this threshold are truncated per-request,
+    establishing per-request effective proposal lengths (RFC #48202) across speculative
+    decoding methods (EAGLE, DraftModel, MTP, etc.). Value must be in [0.0, 1.0]."""
+
     @staticmethod
     def _acceptance_length_to_rates(length: float, n: int) -> list[float]:
         """Mean acceptance length to unconditional per-position rates, using
@@ -1757,6 +1763,13 @@ class SpeculativeConfig:
                 "are only valid with rejection_sample_method='synthetic'."
             )
 
+        if self.draft_token_acceptance_threshold is not None:
+            if not (0.0 <= self.draft_token_acceptance_threshold <= 1.0):
+                raise ValueError(
+                    "draft_token_acceptance_threshold must be between 0.0 and 1.0, "
+                    f"got {self.draft_token_acceptance_threshold}"
+                )
+
         if self.draft_model_config:
             self.draft_model_config.verify_with_parallel_config(
                 self.draft_parallel_config
@@ -1870,6 +1883,9 @@ class SpeculativeConfig:
 
     def uses_dynamic_speculative_decoding(self) -> bool:
         return self.num_speculative_tokens_per_batch_size is not None
+
+    def uses_adaptive_proposal_length(self) -> bool:
+        return self.draft_token_acceptance_threshold is not None
 
     def uses_draft_model(self) -> bool:
         return self.method == "draft_model"

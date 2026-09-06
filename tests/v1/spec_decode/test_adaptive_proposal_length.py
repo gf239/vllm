@@ -1,0 +1,200 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Tests for per-request effective proposal lengths in adaptive speculative decoding (RFC #48202)."""
+
+import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+from vllm.config.speculative import SpeculativeConfig
+from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.spec_decode.ngram_proposer_gpu import update_scheduler_for_invalid_drafts
+from vllm.v1.spec_decode.utils import compute_adaptive_valid_draft_tokens
+
+
+class MockTensor:
+    """Lightweight tensor mock to allow testing tensor math without requiring torch/CUDA."""
+
+    def __init__(self, data, dtype="float32"):
+        self.data = [list(row) if isinstance(row, (list, tuple)) else row for row in data]
+        self.shape = (len(self.data), len(self.data[0])) if self.data and isinstance(self.data[0], list) else (len(self.data),)
+        self.dtype = dtype
+
+    def __ge__(self, other):
+        res = []
+        for row in self.data:
+            res.append([x >= other for x in row])
+        return MockTensor(res, dtype="bool")
+
+    def int(self):
+        res = []
+        for row in self.data:
+            res.append([int(x) for x in row])
+        return MockTensor(res, dtype="int32")
+
+    def bool(self):
+        res = []
+        for row in self.data:
+            res.append([bool(x) for x in row])
+        return MockTensor(res, dtype="bool")
+
+    def sum(self, dim=1, dtype=None):
+        res = []
+        for row in self.data:
+            res.append(sum(row))
+        return MockTensor(res, dtype=dtype or "int32")
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+    def item(self):
+        if len(self.data) == 1 and not isinstance(self.data[0], list):
+            return self.data[0]
+        return self.data
+
+
+class TestAdaptiveProposalLength(unittest.TestCase):
+
+    def test_speculative_config_acceptance_threshold_validation(self):
+        """Test validation of draft_token_acceptance_threshold in SpeculativeConfig."""
+        # Valid values
+        for val in [0.0, 0.25, 0.5, 0.8, 1.0]:
+            cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+            cfg.draft_token_acceptance_threshold = val
+            cfg.tensor_parallel_size = None
+            cfg.num_speculative_tokens = 3
+            cfg.rejection_sample_method = "standard"
+            cfg.synthetic_acceptance_rates = None
+            cfg.synthetic_acceptance_length = None
+            cfg.draft_model_config = None
+            cfg.use_heterogeneous_vocab = False
+            cfg._verify_args()
+            self.assertTrue(cfg.uses_adaptive_proposal_length())
+
+        # Unset / None
+        cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+        cfg.draft_token_acceptance_threshold = None
+        cfg.tensor_parallel_size = None
+        cfg.num_speculative_tokens = 3
+        cfg.rejection_sample_method = "standard"
+        cfg.synthetic_acceptance_rates = None
+        cfg.synthetic_acceptance_length = None
+        cfg.draft_model_config = None
+        cfg.use_heterogeneous_vocab = False
+        cfg._verify_args()
+        self.assertFalse(cfg.uses_adaptive_proposal_length())
+
+        # Out of bounds (< 0.0)
+        with self.assertRaises(ValueError):
+            cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+            cfg.draft_token_acceptance_threshold = -0.1
+            cfg.tensor_parallel_size = None
+            cfg.num_speculative_tokens = 3
+            cfg.rejection_sample_method = "standard"
+            cfg.synthetic_acceptance_rates = None
+            cfg.synthetic_acceptance_length = None
+            cfg.draft_model_config = None
+            cfg.use_heterogeneous_vocab = False
+            cfg._verify_args()
+
+        # Out of bounds (> 1.0)
+        with self.assertRaises(ValueError):
+            cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+            cfg.draft_token_acceptance_threshold = 1.05
+            cfg.tensor_parallel_size = None
+            cfg.num_speculative_tokens = 3
+            cfg.rejection_sample_method = "standard"
+            cfg.synthetic_acceptance_rates = None
+            cfg.synthetic_acceptance_length = None
+            cfg.draft_model_config = None
+            cfg.use_heterogeneous_vocab = False
+            cfg._verify_args()
+
+    def test_compute_adaptive_valid_draft_tokens_logic(self):
+        """Test per-request proposal truncation and cumulative validity masking."""
+        try:
+            import torch
+            has_torch = True
+        except ImportError:
+            has_torch = False
+
+        if has_torch:
+            # Batch of 3 requests, K = 3, threshold = 0.6
+            # Req 0: [0.9, 0.8, 0.7] -> All >= 0.6 -> valid_k = 3
+            # Req 1: [0.8, 0.4, 0.9] -> Token 1 drops -> valid_k = 1
+            # Req 2: [0.3, 0.9, 0.9] -> Token 0 drops -> valid_k = 0
+            confidences = torch.tensor(
+                [
+                    [0.9, 0.8, 0.7],
+                    [0.8, 0.4, 0.9],
+                    [0.3, 0.9, 0.9],
+                ],
+                dtype=torch.float32,
+            )
+            num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
+                confidences, threshold=0.6
+            )
+
+            self.assertEqual(num_valid.tolist(), [3, 1, 0])
+            self.assertEqual(
+                valid_mask.tolist(),
+                [
+                    [True, True, True],
+                    [True, False, False],
+                    [False, False, False],
+                ],
+            )
+
+    def test_update_scheduler_for_invalid_drafts(self):
+        """Test scheduler trimming for variable proposal lengths across requests."""
+        num_valid_event = MagicMock()
+        # Mock CPU buffer returning valid counts: req_0 -> 3, req_1 -> 1, req_2 -> 0
+        mock_cpu_counts = [
+            SimpleNamespace(item=lambda: 3),
+            SimpleNamespace(item=lambda: 1),
+            SimpleNamespace(item=lambda: 0),
+        ]
+
+        scheduler_output = SchedulerOutput(
+            scheduled_new_reqs=SimpleNamespace(),
+            scheduled_cached_reqs=SimpleNamespace(req_ids=["req_0", "req_1", "req_2"]),
+            num_scheduled_tokens={"req_0": 4, "req_1": 4, "req_2": 4},
+            total_num_scheduled_tokens=12,
+            scheduled_spec_decode_tokens={
+                "req_0": [101, 102, 103],
+                "req_1": [201, 202, 203],
+                "req_2": [301, 302, 303],
+            },
+            scheduled_encoder_inputs={},
+        )
+
+        req_id_to_index = {"req_0": 0, "req_1": 1, "req_2": 2}
+
+        update_scheduler_for_invalid_drafts(
+            num_valid_draft_tokens_event=num_valid_event,
+            num_valid_draft_tokens_cpu=mock_cpu_counts,
+            scheduler_output=scheduler_output,
+            req_id_to_index=req_id_to_index,
+        )
+
+        num_valid_event.synchronize.assert_called_once()
+
+        # Req 0 kept all 3 tokens
+        self.assertEqual(scheduler_output.scheduled_spec_decode_tokens["req_0"], [101, 102, 103])
+        self.assertEqual(scheduler_output.num_scheduled_tokens["req_0"], 4)
+
+        # Req 1 trimmed to 1 token
+        self.assertEqual(scheduler_output.scheduled_spec_decode_tokens["req_1"], [201])
+        self.assertEqual(scheduler_output.num_scheduled_tokens["req_1"], 2)
+
+        # Req 2 has 0 valid tokens -> removed from spec_decode dict
+        self.assertNotIn("req_2", scheduler_output.scheduled_spec_decode_tokens)
+        self.assertEqual(scheduler_output.num_scheduled_tokens["req_2"], 1)
+
+        # Total tokens trimmed = (3-3) + (3-1) + (3-0) = 0 + 2 + 3 = 5 tokens trimmed
+        # 12 - 5 = 7 tokens remaining
+        self.assertEqual(scheduler_output.total_num_scheduled_tokens, 7)
+
+
+if __name__ == "__main__":
+    unittest.main()

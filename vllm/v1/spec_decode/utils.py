@@ -599,3 +599,27 @@ def unconditional_to_conditional_rates(rates: list[float]) -> list[float]:
     """Convert per-position unconditional rates to per-position conditional
     rates for the early-terminating rejection loop (c_i = p_i / p_{i-1})."""
     return [p / q if q > 0.0 else 0.0 for p, q in zip(rates, [1.0, *rates[:-1]])]
+
+
+def compute_adaptive_valid_draft_tokens(
+    confidences: torch.Tensor,
+    threshold: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute per-request valid draft counts and boolean mask based on confidence threshold.
+
+    Implements per-request effective proposal lengths for adaptive speculative decoding (RFC #48202).
+    Once a draft token's probability drops below threshold, all subsequent tokens for that request
+    are marked invalid, as speculative chains require contiguous acceptance from the prefix.
+
+    Args:
+        confidences: [batch_size, num_spec_tokens] tensor of draft token probabilities.
+        threshold: minimum confidence score required to accept draft token.
+
+    Returns:
+        num_valid_draft_tokens: [batch_size] int32 tensor of valid draft counts per request.
+        valid_mask: [batch_size, num_spec_tokens] bool tensor where True indicates a valid slot.
+    """
+    is_confident = confidences >= threshold
+    valid_mask = torch.cumprod(is_confident.int(), dim=1).bool()
+    num_valid_draft_tokens = valid_mask.sum(dim=1, dtype=torch.int32)
+    return num_valid_draft_tokens, valid_mask

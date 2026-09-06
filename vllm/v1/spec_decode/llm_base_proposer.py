@@ -52,6 +52,7 @@ from vllm.v1.sample.sampler import _SAMPLING_EPS
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 from vllm.v1.spec_decode.utils import (
     PADDING_SLOT_ID,
+    compute_adaptive_valid_draft_tokens,
     compute_new_slot_mapping,
     copy_and_expand_eagle_inputs_kernel,
     eagle_prepare_inputs_padded_kernel,
@@ -90,6 +91,10 @@ class SpecDecodeBaseProposer:
         self.dp_rank = vllm_config.parallel_config.data_parallel_rank
         self.eplb_state: EplbState | None = None
         self.num_speculative_tokens = self.speculative_config.num_speculative_tokens
+        self.draft_token_acceptance_threshold = (
+            self.speculative_config.draft_token_acceptance_threshold
+        )
+        self._last_num_valid_draft_tokens: torch.Tensor | None = None
 
         # We need to get the hidden size from the draft model config because
         # the draft model's hidden size can be different from the target model's
@@ -507,6 +512,35 @@ class SpecDecodeBaseProposer:
     def take_last_draft_probs(self) -> torch.Tensor | None:
         return self._last_draft_probs
 
+    def take_last_num_valid_draft_tokens(self) -> torch.Tensor | None:
+        ret = self._last_num_valid_draft_tokens
+        self._last_num_valid_draft_tokens = None
+        return ret
+
+    def _sample_draft_tokens_with_confidence(
+        self,
+        hidden_states: torch.Tensor,
+        sampling_metadata: SamplingMetadata,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        draft_token_ids, draft_probs = self._sample_draft_tokens(
+            hidden_states, sampling_metadata
+        )
+        if self.draft_token_acceptance_threshold is None:
+            return draft_token_ids, draft_probs, None
+
+        if draft_probs is not None:
+            confidences = draft_probs.gather(
+                -1, draft_token_ids.unsqueeze(-1)
+            ).squeeze(-1)
+        else:
+            logits = self.model.compute_logits(hidden_states)
+            if self.use_heterogeneous_vocab and self.vocab_mapping is not None:
+                logits = self.vocab_mapping.constrain_draft_logits(logits)
+            probs = torch.softmax(logits, dim=-1)
+            confidences = probs.max(dim=-1).values
+
+        return draft_token_ids, draft_probs, confidences
+
     def propose(
         self,
         num_speculative_tokens,
@@ -529,6 +563,10 @@ class SpecDecodeBaseProposer:
     ) -> torch.Tensor:
         self.num_speculative_tokens = num_speculative_tokens
         self._last_draft_probs = None
+        self._last_num_valid_draft_tokens = None
+        draft_confidences_list: list[torch.Tensor] | None = (
+            [] if self.draft_token_acceptance_threshold is not None else None
+        )
         batch_size = common_attn_metadata.batch_size()
 
         if self.method in ("eagle3", "dflash"):
@@ -625,13 +663,25 @@ class SpecDecodeBaseProposer:
 
         # Early exit if there is only one draft token to be generated.
         if self.num_speculative_tokens == 1 or self.parallel_drafting:
-            draft_token_ids, draft_probs = self._sample_draft_tokens(
-                sample_hidden_states, sampling_metadata
+            draft_token_ids, draft_probs, confidences = (
+                self._sample_draft_tokens_with_confidence(
+                    sample_hidden_states, sampling_metadata
+                )
             )
             if draft_probs is not None:
                 self._last_draft_probs = draft_probs.view(
                     -1, self.num_speculative_tokens, draft_probs.shape[-1]
                 ).contiguous()
+            if self.draft_token_acceptance_threshold is not None and confidences is not None:
+                confidences = confidences.view(-1, self.num_speculative_tokens)
+                num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
+                    confidences, self.draft_token_acceptance_threshold
+                )
+                self._last_num_valid_draft_tokens = num_valid
+                draft_token_ids = draft_token_ids.view(
+                    -1, self.num_speculative_tokens
+                ).masked_fill(~valid_mask, -1)
+                return draft_token_ids
             return draft_token_ids.view(-1, self.num_speculative_tokens)
 
         if self.uses_mrope:
@@ -646,10 +696,14 @@ class SpecDecodeBaseProposer:
             # (which read via _get_positions) use the correct values.
             self.positions[:batch_size] = positions
 
-        draft_token_ids, draft_probs = self._sample_draft_tokens(
-            sample_hidden_states, sampling_metadata
+        draft_token_ids, draft_probs, confidences = (
+            self._sample_draft_tokens_with_confidence(
+                sample_hidden_states, sampling_metadata
+            )
         )
         draft_probs_list = None if draft_probs is None else [draft_probs]
+        if draft_confidences_list is not None and confidences is not None:
+            draft_confidences_list.append(confidences)
 
         if self.allowed_attn_types is not None:
             for group_md in per_group_attn_metadata:
@@ -760,18 +814,32 @@ class SpecDecodeBaseProposer:
                     last_hidden_states, hidden_states = ret_hidden_states
 
             hidden_states = hidden_states[:batch_size]
-            draft_token_ids, draft_probs = self._sample_draft_tokens(
-                last_hidden_states[:batch_size], sampling_metadata
+            draft_token_ids, draft_probs, confidences = (
+                self._sample_draft_tokens_with_confidence(
+                    last_hidden_states[:batch_size], sampling_metadata
+                )
             )
             if draft_probs is not None:
                 assert draft_probs_list is not None
                 draft_probs_list.append(draft_probs)
+            if draft_confidences_list is not None and confidences is not None:
+                draft_confidences_list.append(confidences)
             draft_token_ids_list.append(draft_token_ids)
 
         # [batch_size, num_speculative_tokens]
         draft_token_ids = torch.stack(draft_token_ids_list, dim=1)
         if draft_probs_list is not None:
             self._last_draft_probs = torch.stack(draft_probs_list, dim=1).contiguous()
+        if (
+            self.draft_token_acceptance_threshold is not None
+            and draft_confidences_list
+        ):
+            confidences = torch.stack(draft_confidences_list, dim=1)
+            num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
+                confidences, self.draft_token_acceptance_threshold
+            )
+            self._last_num_valid_draft_tokens = num_valid
+            draft_token_ids = draft_token_ids.masked_fill(~valid_mask, -1)
         return draft_token_ids
 
     def _update_positions_dependent_metadata(

@@ -516,6 +516,7 @@ class SpecDecodeBaseProposer:
         return self._last_draft_probs
 
     def take_last_num_valid_draft_tokens(self) -> torch.Tensor | None:
+        """Retrieve and reset the per-request valid draft token counts."""
         ret = self._last_num_valid_draft_tokens
         self._last_num_valid_draft_tokens = None
         return ret
@@ -525,6 +526,15 @@ class SpecDecodeBaseProposer:
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """Sample draft tokens and extract token-level confidence scores.
+
+        Returns:
+            draft_token_ids: [batch_size] tensor of sampled draft token IDs.
+            draft_probs: [batch_size, vocab_size] tensor of probabilities if
+                enabled for probabilistic sampling, otherwise None.
+            confidences: [batch_size] tensor of confidence probabilities for the
+                selected draft tokens if thresholding is enabled, otherwise None.
+        """
         if self.draft_token_acceptance_threshold is None:
             draft_token_ids, draft_probs = self._sample_draft_tokens(
                 hidden_states, sampling_metadata

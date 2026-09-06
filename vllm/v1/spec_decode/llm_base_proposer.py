@@ -555,11 +555,13 @@ class SpecDecodeBaseProposer:
 
         # Greedy path: compute logits once to avoid duplicate lm_head matmul.
         logits = self.model.compute_logits(hidden_states)
-        if self.use_heterogeneous_vocab and self.vocab_mapping is not None:
+        if self.use_heterogeneous_vocab:
+            assert self.vocab_mapping is not None
             logits = self.vocab_mapping.constrain_draft_logits(logits)
-        probs = torch.softmax(logits, dim=-1)
+        probs = torch.softmax(logits, dim=-1, dtype=torch.float32)
         confidences, draft_token_ids = probs.max(dim=-1)
-        if self.use_heterogeneous_vocab and self.vocab_mapping is not None:
+        if self.use_heterogeneous_vocab:
+            assert self.vocab_mapping is not None
             draft_token_ids = self.vocab_mapping.map_draft_to_target_ids(
                 draft_token_ids
             )

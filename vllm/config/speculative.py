@@ -1793,6 +1793,12 @@ class SpeculativeConfig:
                     "use_local_argmax_reduction because confidence estimation "
                     "requires draft probability calculation."
                 )
+            if not (self.use_eagle() or self.uses_draft_model()):
+                raise ValueError(
+                    "draft_token_acceptance_threshold is currently only supported "
+                    f"with draft_model or eagle-style speculative methods, "
+                    f"got method='{self.method}'"
+                )
 
         if self.draft_model_config:
             self.draft_model_config.verify_with_parallel_config(

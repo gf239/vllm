@@ -25,6 +25,7 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         # Valid values
         for val in [0.0, 0.25, 0.5, 0.8, 1.0]:
             cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+            cfg.method = "draft_model"
             cfg.draft_token_acceptance_threshold = val
             cfg.draft_token_acceptance_mode = "cumulative"
             cfg.tensor_parallel_size = None
@@ -39,6 +40,7 @@ class TestAdaptiveProposalLength(unittest.TestCase):
 
         # Unset / None
         cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+        cfg.method = "draft_model"
         cfg.draft_token_acceptance_threshold = None
         cfg.draft_token_acceptance_mode = "cumulative"
         cfg.tensor_parallel_size = None
@@ -54,6 +56,7 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         # Out of bounds (< 0.0)
         with self.assertRaises(ValueError):
             cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+            cfg.method = "draft_model"
             cfg.draft_token_acceptance_threshold = -0.1
             cfg.draft_token_acceptance_mode = "cumulative"
             cfg.tensor_parallel_size = None
@@ -68,6 +71,7 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         # Out of bounds (> 1.0)
         with self.assertRaises(ValueError):
             cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+            cfg.method = "draft_model"
             cfg.draft_token_acceptance_threshold = 1.05
             cfg.draft_token_acceptance_mode = "cumulative"
             cfg.tensor_parallel_size = None
@@ -82,6 +86,7 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         # Incompatible with use_local_argmax_reduction
         with self.assertRaises(ValueError):
             cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+            cfg.method = "draft_model"
             cfg.draft_token_acceptance_threshold = 0.5
             cfg.draft_token_acceptance_mode = "cumulative"
             cfg.use_local_argmax_reduction = True
@@ -94,12 +99,32 @@ class TestAdaptiveProposalLength(unittest.TestCase):
             cfg.use_heterogeneous_vocab = False
             cfg._verify_args()
 
+        # Incompatible with unsupported speculative methods (e.g. ngram, medusa,
+        # mlp_speculator, suffix)
+        for unsupported in ["ngram", "medusa", "mlp_speculator", "suffix"]:
+            with self.assertRaises(ValueError):
+                cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+                cfg.method = unsupported
+                cfg.draft_token_acceptance_threshold = 0.5
+                cfg.draft_token_acceptance_mode = "cumulative"
+                cfg.use_local_argmax_reduction = False
+                cfg.tensor_parallel_size = None
+                cfg.num_speculative_tokens = 3
+                cfg.rejection_sample_method = "standard"
+                cfg.synthetic_acceptance_rates = None
+                cfg.synthetic_acceptance_length = None
+                cfg.draft_model_config = None
+                cfg.use_heterogeneous_vocab = False
+                cfg._verify_args()
+
     def test_speculative_config_mode_validation(self):
         """Test validation of draft_token_acceptance_mode in SpeculativeConfig."""
         for valid_mode in ["token_threshold", "cumulative", "cudagraph_aligned"]:
             cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+            cfg.method = "draft_model"
             cfg.draft_token_acceptance_threshold = 0.5
             cfg.draft_token_acceptance_mode = valid_mode
+            cfg.use_local_argmax_reduction = False
             cfg.tensor_parallel_size = None
             cfg.num_speculative_tokens = 3
             cfg.rejection_sample_method = "standard"
@@ -113,8 +138,10 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         # Invalid mode
         with self.assertRaises(ValueError):
             cfg = SpeculativeConfig.__new__(SpeculativeConfig)
+            cfg.method = "draft_model"
             cfg.draft_token_acceptance_threshold = 0.5
             cfg.draft_token_acceptance_mode = "invalid_mode"
+            cfg.use_local_argmax_reduction = False
             cfg.tensor_parallel_size = None
             cfg.num_speculative_tokens = 3
             cfg.rejection_sample_method = "standard"

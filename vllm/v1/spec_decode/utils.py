@@ -628,7 +628,7 @@ def _get_cached_arange(num_tokens: int, device: torch.device) -> torch.Tensor:
 def compute_adaptive_valid_draft_tokens(
     confidences: torch.Tensor,
     threshold: float,
-    mode: str = "cumulative",
+    mode: str = "token_threshold",
     cudagraph_buckets: list[int] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute per-request valid draft counts and boolean mask based on confidence
@@ -639,10 +639,12 @@ def compute_adaptive_valid_draft_tokens(
     specified mode, subsequent draft tokens for that request are marked invalid.
 
     Modes:
-        - "token_threshold": Checks marginal per-token probabilities
-          (p_i >= threshold).
+        - "token_threshold" (default): Checks marginal per-token probabilities
+          (p_i >= threshold). Preserves strong prefix chains without compounding
+          geometric decay.
         - "cumulative": Checks cumulative prefix survival probability
-          (prod(p_1..p_i) >= threshold).
+          (prod(p_1..p_i) >= threshold). Note: decays geometrically with depth
+          and is aggressive by construction.
         - "cudagraph_aligned": Evaluates cumulative prefix survival and snaps
           non-zero counts upwards to the nearest CUDA graph bucket to utilize
           existing verification allocations at zero marginal overhead.

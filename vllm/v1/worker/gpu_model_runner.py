@@ -942,7 +942,10 @@ class GPUModelRunner(
         self._num_valid_draft_tokens_copy_stream: torch.cuda.Stream | None = None
         if (
             self.speculative_config is not None
-            and self.speculative_config.use_ngram_gpu()
+            and (
+                self.speculative_config.use_ngram_gpu()
+                or self.speculative_config.uses_adaptive_proposal_length()
+            )
         ):
             self._num_valid_draft_tokens_cpu = torch.empty(
                 self.max_num_reqs, dtype=torch.int32, pin_memory=PIN_MEMORY
@@ -1351,7 +1354,10 @@ class GPUModelRunner(
         original_num_spec_per_req: dict[str, int] = {}
         if (
             self.speculative_config is not None
-            and self.speculative_config.use_ngram_gpu()
+            and (
+                self.speculative_config.use_ngram_gpu()
+                or self.speculative_config.uses_adaptive_proposal_length()
+            )
         ):
             for req_id, toks in scheduled_spec_tokens.items():
                 original_num_spec_per_req[req_id] = len(toks)
@@ -4287,7 +4293,10 @@ class GPUModelRunner(
         # The replace is much faster than deepcopy.
         if (
             self.speculative_config is not None
-            and self.speculative_config.use_ngram_gpu()
+            and (
+                self.speculative_config.use_ngram_gpu()
+                or self.speculative_config.uses_adaptive_proposal_length()
+            )
         ):
             num_scheduled_tokens_copy = scheduler_output.num_scheduled_tokens.copy()
             spec_decode_tokens_copy = (
@@ -5379,6 +5388,21 @@ class GPUModelRunner(
                 if draft_probs is not None:
                     self._draft_probs = draft_probs
                     self._draft_prob_req_ids = self.input_batch.req_ids.copy()
+
+            if hasattr(self.drafter, "take_last_num_valid_draft_tokens"):
+                num_valid = self.drafter.take_last_num_valid_draft_tokens()
+                if (
+                    num_valid is not None
+                    and self._num_valid_draft_tokens_copy_stream is not None
+                ):
+                    self._num_valid_draft_tokens = num_valid
+                    copy_num_valid_draft_tokens(
+                        self._num_valid_draft_tokens_cpu,
+                        self._num_valid_draft_tokens_copy_stream,
+                        self._num_valid_draft_tokens_event,
+                        self._num_valid_draft_tokens,
+                        self.input_batch.num_reqs,
+                    )
 
         return draft_token_ids
 

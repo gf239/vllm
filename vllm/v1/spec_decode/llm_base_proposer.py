@@ -532,9 +532,9 @@ class SpecDecodeBaseProposer:
             return draft_token_ids, draft_probs, None
 
         if draft_probs is not None:
-            confidences = draft_probs.gather(
-                -1, draft_token_ids.unsqueeze(-1)
-            ).squeeze(-1)
+            confidences = draft_probs.gather(-1, draft_token_ids.unsqueeze(-1)).squeeze(
+                -1
+            )
         else:
             logits = self.model.compute_logits(hidden_states)
             if self.use_heterogeneous_vocab and self.vocab_mapping is not None:
@@ -675,7 +675,10 @@ class SpecDecodeBaseProposer:
                 self._last_draft_probs = draft_probs.view(
                     -1, self.num_speculative_tokens, draft_probs.shape[-1]
                 ).contiguous()
-            if self.draft_token_acceptance_threshold is not None and confidences is not None:
+            if (
+                self.draft_token_acceptance_threshold is not None
+                and confidences is not None
+            ):
                 confidences = confidences.view(-1, self.num_speculative_tokens)
                 num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
                     confidences,
@@ -835,10 +838,7 @@ class SpecDecodeBaseProposer:
         draft_token_ids = torch.stack(draft_token_ids_list, dim=1)
         if draft_probs_list is not None:
             self._last_draft_probs = torch.stack(draft_probs_list, dim=1).contiguous()
-        if (
-            self.draft_token_acceptance_threshold is not None
-            and draft_confidences_list
-        ):
+        if self.draft_token_acceptance_threshold is not None and draft_confidences_list:
             confidences = torch.stack(draft_confidences_list, dim=1)
             num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
                 confidences,

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Tests for per-request effective proposal lengths in adaptive speculative decoding (RFC #48202)."""
+"""Tests for per-request effective proposal lengths in adaptive speculative
+decoding (RFC #48202)."""
 
 import sys
 import unittest
@@ -19,7 +20,6 @@ from vllm.v1.spec_decode.utils import compute_adaptive_valid_draft_tokens
 
 
 class TestAdaptiveProposalLength(unittest.TestCase):
-
     def test_speculative_config_acceptance_threshold_validation(self):
         """Test validation of draft_token_acceptance_threshold in SpeculativeConfig."""
         # Valid values
@@ -166,7 +166,8 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         )
 
     def test_compute_adaptive_valid_draft_tokens_cudagraph_aligned_mode(self):
-        """Test mode='cudagraph_aligned' (cumulative count snapped up to nearest CUDA graph bucket)."""
+        """Test mode='cudagraph_aligned' (cumulative count snapped up to nearest
+        CUDA graph bucket)."""
         # Batch of 3 requests, K = 3, threshold = 0.6, buckets = [2, 3]
         # Base cumulative counts are [2, 1, 0]
         # Req 0: base_k = 2 -> snaps to bucket 2
@@ -181,7 +182,10 @@ class TestAdaptiveProposalLength(unittest.TestCase):
             dtype=torch.float32,
         )
         num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
-            confidences, threshold=0.6, mode="cudagraph_aligned", cudagraph_buckets=[2, 3]
+            confidences,
+            threshold=0.6,
+            mode="cudagraph_aligned",
+            cudagraph_buckets=[2, 3],
         )
 
         self.assertEqual(num_valid.tolist(), [2, 2, 0])
@@ -207,7 +211,9 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         # Invalid mode
         conf = torch.tensor([[0.9, 0.8]], dtype=torch.float32)
         with self.assertRaises(ValueError):
-            compute_adaptive_valid_draft_tokens(conf, threshold=0.6, mode="nonexistent_mode")
+            compute_adaptive_valid_draft_tokens(
+                conf, threshold=0.6, mode="nonexistent_mode"
+            )
 
     def test_update_scheduler_for_invalid_drafts(self):
         """Test scheduler trimming for variable proposal lengths across requests."""
@@ -247,7 +253,9 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         num_valid_event.synchronize.assert_called_once()
 
         # Req 0 kept all 3 tokens
-        self.assertEqual(scheduler_output.scheduled_spec_decode_tokens["req_0"], [101, 102, 103])
+        self.assertEqual(
+            scheduler_output.scheduled_spec_decode_tokens["req_0"], [101, 102, 103]
+        )
         self.assertEqual(scheduler_output.num_scheduled_tokens["req_0"], 4)
 
         # Req 1 trimmed to 1 token

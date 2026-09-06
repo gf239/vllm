@@ -543,15 +543,19 @@ class SpeculativeConfig:
 
     draft_token_acceptance_threshold: float | None = None
     """Minimum confidence threshold for draft tokens to be submitted for verification.
-    If set, draft tokens with confidence below this threshold are truncated per-request,
-    establishing per-request effective proposal lengths (RFC #48202) across speculative
-    decoding methods (EAGLE, DraftModel, MTP, etc.). Value must be in [0.0, 1.0]."""
+    If set, draft tokens with confidence below this threshold are truncated
+    per-request, establishing per-request effective proposal lengths (RFC #48202)
+    across speculative decoding methods (EAGLE, DraftModel, MTP, etc.). Value must
+    be in [0.0, 1.0]."""
 
     draft_token_acceptance_mode: AdaptiveProposalMode = "cumulative"
     """Strategy for evaluating draft confidence and determining proposal length:
-    - 'token_threshold': Evaluates marginal per-token probabilities (p_i >= threshold).
-    - 'cumulative': Evaluates cumulative joint survival probability (prod(p_1..p_i) >= threshold).
-    - 'cudagraph_aligned': Cumulative joint survival snapped upwards to nearest CUDA graph bucket.
+    - 'token_threshold': Evaluates marginal per-token probabilities
+      (p_i >= threshold).
+    - 'cumulative': Evaluates cumulative joint survival probability
+      (prod(p_1..p_i) >= threshold).
+    - 'cudagraph_aligned': Cumulative joint survival snapped upwards to
+      nearest CUDA graph bucket.
     """
 
     @staticmethod

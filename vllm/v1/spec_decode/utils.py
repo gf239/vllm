@@ -684,9 +684,7 @@ def compute_adaptive_valid_draft_tokens(
         valid_b = torch.where(
             diff >= 0,
             bucket_tensor.unsqueeze(0),
-            torch.tensor(
-                num_spec_tokens + 1, device=confidences.device, dtype=torch.int32
-            ),
+            num_spec_tokens + 1,
         )
         snapped_k = valid_b.min(dim=1).values.clamp(max=num_spec_tokens)
         final_k = torch.where(base_k == 0, torch.zeros_like(base_k), snapped_k)

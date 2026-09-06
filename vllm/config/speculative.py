@@ -1787,6 +1787,12 @@ class SpeculativeConfig:
                     f"draft_token_acceptance_mode must be one of {valid_modes}, "
                     f"got {self.draft_token_acceptance_mode}"
                 )
+            if self.use_local_argmax_reduction:
+                raise ValueError(
+                    "draft_token_acceptance_threshold cannot be used with "
+                    "use_local_argmax_reduction because confidence estimation "
+                    "requires draft probability calculation."
+                )
 
         if self.draft_model_config:
             self.draft_model_config.verify_with_parallel_config(

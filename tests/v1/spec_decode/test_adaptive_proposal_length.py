@@ -360,6 +360,127 @@ class TestAdaptiveProposalLength(unittest.TestCase):
         self.assertEqual(req_ids_list, ["req_2", "req_3"])
         self.assertEqual(draft_tokens_list, [[301], []])
 
+    def test_cudagraph_aligned_fallback_and_invalid_buckets(self):
+        """Test cudagraph_aligned mode gracefully handles empty, invalid,
+        or out-of-range buckets."""
+        confidences = torch.tensor([[0.9, 0.8, 0.7]], dtype=torch.float32)
+        # Empty list -> falls back to [num_spec_tokens] (3)
+        num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
+            confidences, threshold=0.5, mode="cudagraph_aligned", cudagraph_buckets=[]
+        )
+        self.assertEqual(num_valid.tolist(), [3])
+        self.assertTrue(valid_mask.all().item())
+
+        # Invalid/out-of-range buckets ([0, -2, 999]) -> filtered, falls back to [3]
+        num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
+            confidences,
+            threshold=0.5,
+            mode="cudagraph_aligned",
+            cudagraph_buckets=[0, -2, 999],
+        )
+        self.assertEqual(num_valid.tolist(), [3])
+
+        # Default buckets=None with K=5: powers-of-two [1, 2, 4, 5]
+        conf_5 = torch.tensor([[0.9, 0.9, 0.1, 0.1, 0.1]], dtype=torch.float32)
+        # base_k is 2 -> snaps to bucket 2
+        num_valid_5, _ = compute_adaptive_valid_draft_tokens(
+            conf_5, threshold=0.5, mode="cudagraph_aligned", cudagraph_buckets=None
+        )
+        self.assertEqual(num_valid_5.tolist(), [2])
+
+    def test_extreme_threshold_boundaries(self):
+        """Test threshold=0.0 (all valid), threshold=1.0 (strict), and all zeros."""
+        confidences = torch.tensor(
+            [
+                [0.1, 0.05, 0.01],
+                [0.0, 0.0, 0.0],
+            ],
+            dtype=torch.float32,
+        )
+        # Threshold = 0.0: all non-negative probabilities are accepted
+        num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
+            confidences, threshold=0.0, mode="cumulative"
+        )
+        self.assertEqual(num_valid.tolist(), [3, 3])
+        self.assertTrue(valid_mask.all().item())
+
+        # All-zeros with threshold > 0.0: none valid
+        num_valid_zero, valid_mask_zero = compute_adaptive_valid_draft_tokens(
+            confidences[1:2], threshold=0.1, mode="token_threshold"
+        )
+        self.assertEqual(num_valid_zero.tolist(), [0])
+        self.assertFalse(valid_mask_zero.any().item())
+
+        # Threshold = 1.0: only exact 1.0 survives
+        conf_strict = torch.tensor(
+            [[1.0, 1.0, 0.99], [1.0, 0.99, 1.0]], dtype=torch.float32
+        )
+        num_valid_strict, _ = compute_adaptive_valid_draft_tokens(
+            conf_strict, threshold=1.0, mode="token_threshold"
+        )
+        self.assertEqual(num_valid_strict.tolist(), [2, 1])
+
+    def test_single_speculative_token_k_equals_1(self):
+        """Test K=1 edge case under adaptive thresholding."""
+        confidences = torch.tensor([[0.85], [0.35]], dtype=torch.float32)
+        num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
+            confidences, threshold=0.5, mode="cumulative"
+        )
+        self.assertEqual(num_valid.tolist(), [1, 0])
+        self.assertEqual(valid_mask.tolist(), [[True], [False]])
+
+    def test_proposer_heterogeneous_batch_masking_and_retrieval(self):
+        """Test proposer state handling across a heterogeneous batch with varying
+        divergence points."""
+        from vllm.v1.spec_decode.llm_base_proposer import SpecDecodeBaseProposer
+
+        proposer = SpecDecodeBaseProposer.__new__(SpecDecodeBaseProposer)
+        proposer.draft_token_acceptance_threshold = 0.5
+        proposer.draft_token_acceptance_mode = "cumulative"
+        proposer._last_num_valid_draft_tokens = None
+
+        # 3 requests, K=3 tokens
+        # Req 0: [0.9, 0.8, 0.8] -> cum >= 0.5 -> 3 valid
+        # Req 1: [0.9, 0.4, 0.9] -> drops at step 2 -> 1 valid
+        # Req 2: [0.3, 0.9, 0.9] -> drops at step 1 -> 0 valid
+        draft_token_ids = torch.tensor(
+            [
+                [101, 102, 103],
+                [201, 202, 203],
+                [301, 302, 303],
+            ],
+            dtype=torch.int64,
+        )
+        confidences = torch.tensor(
+            [
+                [0.9, 0.8, 0.8],
+                [0.9, 0.4, 0.9],
+                [0.3, 0.9, 0.9],
+            ],
+            dtype=torch.float32,
+        )
+
+        num_valid, valid_mask = compute_adaptive_valid_draft_tokens(
+            confidences,
+            threshold=proposer.draft_token_acceptance_threshold,
+            mode=proposer.draft_token_acceptance_mode,
+        )
+        proposer._last_num_valid_draft_tokens = num_valid
+        masked_tokens = draft_token_ids.masked_fill(~valid_mask, -1)
+
+        self.assertEqual(
+            proposer.take_last_num_valid_draft_tokens().tolist(), [3, 1, 0]
+        )
+        self.assertIsNone(proposer.take_last_num_valid_draft_tokens())
+        self.assertEqual(
+            masked_tokens.tolist(),
+            [
+                [101, 102, 103],
+                [201, -1, -1],
+                [-1, -1, -1],
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

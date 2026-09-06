@@ -1349,9 +1349,13 @@ class GPUModelRunner(
         # Save scheduler-allocated spec lengths before trimming so
         # prev_num_draft_len keeps the optimistic count for rejection correction.
         original_num_spec_per_req: dict[str, int] = {}
-        if self.speculative_config is not None and (
-            self.speculative_config.use_ngram_gpu()
-            or self.speculative_config.uses_adaptive_proposal_length()
+        if (
+            self.speculative_config is not None
+            and (
+                self.speculative_config.use_ngram_gpu()
+                or self.speculative_config.uses_adaptive_proposal_length()
+            )
+            and scheduled_spec_tokens
         ):
             for req_id, toks in scheduled_spec_tokens.items():
                 original_num_spec_per_req[req_id] = len(toks)
@@ -4285,9 +4289,13 @@ class GPUModelRunner(
         # If ngram_gpu is used, we need to copy the scheduler_output to avoid
         # the modification has influence on the scheduler_output in engine core process.
         # The replace is much faster than deepcopy.
-        if self.speculative_config is not None and (
-            self.speculative_config.use_ngram_gpu()
-            or self.speculative_config.uses_adaptive_proposal_length()
+        if (
+            self.speculative_config is not None
+            and (
+                self.speculative_config.use_ngram_gpu()
+                or self.speculative_config.uses_adaptive_proposal_length()
+            )
+            and scheduler_output.scheduled_spec_decode_tokens
         ):
             num_scheduled_tokens_copy = scheduler_output.num_scheduled_tokens.copy()
             spec_decode_tokens_copy = (

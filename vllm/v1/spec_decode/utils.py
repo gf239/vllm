@@ -674,7 +674,11 @@ def compute_adaptive_valid_draft_tokens(
             if not buckets or buckets[-1] < num_spec_tokens:
                 buckets.append(num_spec_tokens)
         else:
-            buckets = sorted(set(cudagraph_buckets))
+            buckets = sorted(
+                {b for b in cudagraph_buckets if 0 < b <= num_spec_tokens}
+            )
+            if not buckets or buckets[-1] < num_spec_tokens:
+                buckets.append(num_spec_tokens)
 
         bucket_tensor = torch.tensor(
             buckets, device=confidences.device, dtype=torch.int32

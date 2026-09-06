@@ -151,6 +151,34 @@ class TestAdaptiveProposalLength(unittest.TestCase):
             cfg.use_heterogeneous_vocab = False
             cfg._verify_args()
 
+    def test_default_mode_token_threshold_and_geometric_decay_difference(self):
+        """Test that default mode is 'token_threshold' and preserves strong chains
+        where cumulative mode would geometrically decay."""
+        import dataclasses
+
+        default_mode = next(
+            f.default
+            for f in dataclasses.fields(SpeculativeConfig)
+            if f.name == "draft_token_acceptance_mode"
+        )
+        self.assertEqual(default_mode, "token_threshold")
+
+        # 2. Strong chain with 7 tokens, each p = 0.75
+        conf = torch.full((1, 7), 0.75, dtype=torch.float32)
+
+        # Default mode (token_threshold with threshold=0.5): all 7 tokens accepted
+        num_valid_default, mask_default = compute_adaptive_valid_draft_tokens(
+            conf, threshold=0.5
+        )
+        self.assertEqual(num_valid_default.tolist(), [7])
+        self.assertTrue(mask_default.all().item())
+
+        # Cumulative mode with threshold=0.5: 0.75^3 = 0.4219 < 0.5 -> cuts at 2
+        num_valid_cum, _ = compute_adaptive_valid_draft_tokens(
+            conf, threshold=0.5, mode="cumulative"
+        )
+        self.assertEqual(num_valid_cum.tolist(), [2])
+
     def test_compute_adaptive_valid_draft_tokens_token_threshold_mode(self):
         """Test mode='token_threshold' (per-token marginal probability)."""
         # Batch of 3 requests, K = 3, threshold = 0.6

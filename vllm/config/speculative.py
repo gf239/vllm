@@ -548,12 +548,15 @@ class SpeculativeConfig:
     across speculative decoding methods (EAGLE, DraftModel, MTP, etc.). Value must
     be in [0.0, 1.0]."""
 
-    draft_token_acceptance_mode: AdaptiveProposalMode = "cumulative"
+    draft_token_acceptance_mode: AdaptiveProposalMode = "token_threshold"
     """Strategy for evaluating draft confidence and determining proposal length:
-    - 'token_threshold': Evaluates marginal per-token probabilities
-      (p_i >= threshold).
-    - 'cumulative': Evaluates cumulative joint survival probability
-      (prod(p_1..p_i) >= threshold).
+    - 'token_threshold' (default): Evaluates marginal per-token probabilities
+      (p_i >= threshold). Preserves strong prefix chains without compounding
+      geometric decay.
+    - 'cumulative': Evaluates cumulative joint prefix survival probability
+      (prod(p_1..p_i) >= threshold). Note that cumulative probability decays
+      geometrically with proposal depth (e.g. 0.75^7 ≈ 0.13), making this mode
+      aggressive by construction.
     - 'cudagraph_aligned': Cumulative joint survival snapped upwards to
       nearest CUDA graph bucket.
     """

@@ -12,16 +12,16 @@ In current speculative decoding setups with draft models (Eagle, DraftModel, MTP
 ### Proposed Changes
 1. **`SpeculativeConfig` (`vllm/config/speculative.py`)**:
    - Added `draft_token_acceptance_threshold: float | None = None` to specify the minimum draft confidence threshold (in `[0.0, 1.0]`).
-   - Added `draft_token_acceptance_mode: AdaptiveProposalMode = "cumulative"` supporting:
-     - `"token_threshold"`: Evaluates marginal per-token probabilities ($p_i \ge \tau$).
-     - `"cumulative"`: Evaluates joint prefix survival probability ($\prod_{j=1}^i p_j \ge \tau$).
+   - Added `draft_token_acceptance_mode: AdaptiveProposalMode = "token_threshold"` supporting:
+     - `"token_threshold"` (default): Evaluates marginal per-token probabilities ($p_i \ge \tau$). Preserves strong prefix chains without compounding geometric decay.
+     - `"cumulative"`: Evaluates cumulative joint prefix survival probability ($\prod_{j=1}^i p_j \ge \tau$). Note: decays geometrically with depth (e.g. $0.75^7 \approx 0.13$) and is aggressive by construction.
      - `"cudagraph_aligned"`: Joint prefix survival snapped up to the nearest CUDA graph bucket boundary for zero marginal verification overhead.
    - Added `draft_token_acceptance_cudagraph_buckets: list[int] | None = None` to allow explicitly configuring target CUDA graph buckets.
    - Added `uses_adaptive_proposal_length() -> bool` helper.
    - Enforced mutual exclusion with `use_local_argmax_reduction` in `_verify_args()` to prevent missing logits errors.
 
 2. **`vllm.v1.spec_decode.utils` (`vllm/v1/spec_decode/utils.py`)**:
-   - Implemented `compute_adaptive_valid_draft_tokens(confidences, threshold, mode="cumulative", cudagraph_buckets=None)` to compute per-request valid draft counts and boolean mask using vectorized GPU logic without host-device synchronization.
+   - Implemented `compute_adaptive_valid_draft_tokens(confidences, threshold, mode="token_threshold", cudagraph_buckets=None)` to compute per-request valid draft counts and boolean mask using vectorized GPU logic without host-device synchronization.
    - Promoted `confidences` to `float32` and clamped to `[0.0, 1.0]` to guarantee IEEE 754 precision and prevent `bfloat16`/`float16` rounding drift or underflow during cumulative probability multiplications.
    - Mode `"cudagraph_aligned"` employs pure scalar broadcasting in `torch.where` to avoid runtime GPU memory allocations during bucket snapping.
 
@@ -38,8 +38,9 @@ In current speculative decoding setups with draft models (Eagle, DraftModel, MTP
    - Sanitized draft tokens in `_get_draft_token_ids_cpu()` to filter out negative masked tokens (`[t for t in tokens if t >= 0]`), protecting CPU scheduler token accounting and grammar validation (guided decoding) from invalid token IDs.
 
 5. **Testing (`tests/v1/spec_decode/test_adaptive_proposal_length.py`)**:
-   - Added 17 comprehensive unit tests covering:
+   - Added 18 comprehensive unit tests covering:
      - Valid and invalid threshold / mode configuration bounds.
+     - Default mode (`token_threshold`) preserving strong chains without geometric decay.
      - Validation of `draft_token_acceptance_cudagraph_buckets` (positive values, non-empty).
      - Proposer resolution hierarchy of `cudagraph_buckets` across speculative and compilation configs.
      - Mutual exclusion between adaptive thresholding and `use_local_argmax_reduction`.

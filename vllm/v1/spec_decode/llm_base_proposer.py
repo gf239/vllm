@@ -711,7 +711,8 @@ class SpecDecodeBaseProposer:
                 self._last_num_valid_draft_tokens = num_valid
                 draft_token_ids = draft_token_ids.view(
                     -1, self.num_speculative_tokens
-                ).masked_fill(~valid_mask, -1)
+                )
+                draft_token_ids.masked_fill_(~valid_mask, -1)
                 return draft_token_ids
             return draft_token_ids.view(-1, self.num_speculative_tokens)
 
@@ -869,7 +870,7 @@ class SpecDecodeBaseProposer:
                 mode=self.draft_token_acceptance_mode,
             )
             self._last_num_valid_draft_tokens = num_valid
-            draft_token_ids = draft_token_ids.masked_fill(~valid_mask, -1)
+            draft_token_ids.masked_fill_(~valid_mask, -1)
         return draft_token_ids
 
     def _update_positions_dependent_metadata(

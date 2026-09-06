@@ -607,31 +607,42 @@ def compute_adaptive_valid_draft_tokens(
     mode: str = "cumulative",
     cudagraph_buckets: list[int] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute per-request valid draft counts and boolean mask based on confidence threshold and mode.
+    """Compute per-request valid draft counts and boolean mask based on confidence
+    threshold and mode.
 
-    Implements per-request effective proposal lengths for adaptive speculative decoding (RFC #48202).
-    Once confidence drops below threshold under the specified mode, subsequent draft tokens for that
-    request are marked invalid.
+    Implements per-request effective proposal lengths for adaptive speculative
+    decoding (RFC #48202). Once confidence drops below threshold under the
+    specified mode, subsequent draft tokens for that request are marked invalid.
 
     Modes:
-        - "token_threshold": Checks marginal per-token probabilities (p_i >= threshold).
-        - "cumulative": Checks cumulative prefix survival probability (prod(p_1..p_i) >= threshold).
-        - "cudagraph_aligned": Evaluates cumulative prefix survival and snaps non-zero counts upwards
-          to the nearest CUDA graph bucket to utilize existing verification allocations at zero marginal overhead.
+        - "token_threshold": Checks marginal per-token probabilities
+          (p_i >= threshold).
+        - "cumulative": Checks cumulative prefix survival probability
+          (prod(p_1..p_i) >= threshold).
+        - "cudagraph_aligned": Evaluates cumulative prefix survival and snaps
+          non-zero counts upwards to the nearest CUDA graph bucket to utilize
+          existing verification allocations at zero marginal overhead.
 
     Args:
-        confidences: [batch_size, num_spec_tokens] tensor of draft token probabilities.
+        confidences: [batch_size, num_spec_tokens] tensor of draft token
+            probabilities.
         threshold: minimum confidence score required to accept draft token.
-        mode: strategy for evaluating draft confidence ('token_threshold', 'cumulative', or 'cudagraph_aligned').
-        cudagraph_buckets: optional list of CUDA graph bucket sizes for 'cudagraph_aligned' mode.
+        mode: strategy for evaluating draft confidence ('token_threshold',
+            'cumulative', or 'cudagraph_aligned').
+        cudagraph_buckets: optional list of CUDA graph bucket sizes for
+            'cudagraph_aligned' mode.
 
     Returns:
-        num_valid_draft_tokens: [batch_size] int32 tensor of valid draft counts per request.
-        valid_mask: [batch_size, num_spec_tokens] bool tensor where True indicates a valid slot.
+        num_valid_draft_tokens: [batch_size] int32 tensor of valid draft counts
+            per request.
+        valid_mask: [batch_size, num_spec_tokens] bool tensor where True indicates
+            a valid slot.
     """
     if confidences.numel() == 0 or confidences.shape[1] == 0:
         return (
-            torch.zeros(confidences.shape[0], dtype=torch.int32, device=confidences.device),
+            torch.zeros(
+                confidences.shape[0], dtype=torch.int32, device=confidences.device
+            ),
             torch.zeros_like(confidences, dtype=torch.bool),
         )
 
@@ -665,13 +676,17 @@ def compute_adaptive_valid_draft_tokens(
         else:
             buckets = sorted(set(cudagraph_buckets))
 
-        bucket_tensor = torch.tensor(buckets, device=confidences.device, dtype=torch.int32)
+        bucket_tensor = torch.tensor(
+            buckets, device=confidences.device, dtype=torch.int32
+        )
         # diff >= 0 means bucket >= base_k
         diff = bucket_tensor.unsqueeze(0) - base_k.unsqueeze(1)
         valid_b = torch.where(
             diff >= 0,
             bucket_tensor.unsqueeze(0),
-            torch.tensor(num_spec_tokens + 1, device=confidences.device, dtype=torch.int32),
+            torch.tensor(
+                num_spec_tokens + 1, device=confidences.device, dtype=torch.int32
+            ),
         )
         snapped_k = valid_b.min(dim=1).values.clamp(max=num_spec_tokens)
         final_k = torch.where(base_k == 0, torch.zeros_like(base_k), snapped_k)
@@ -681,4 +696,3 @@ def compute_adaptive_valid_draft_tokens(
         return final_k.to(torch.int32), valid_mask
 
     raise ValueError(f"Unknown adaptive proposal mode: {mode}")
-

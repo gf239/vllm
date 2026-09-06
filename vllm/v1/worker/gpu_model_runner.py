@@ -5027,7 +5027,10 @@ class GPUModelRunner(
 
     def _get_draft_token_ids_cpu(self) -> tuple[list[list[int]], list[str]]:
         if isinstance(self._draft_token_ids, list):
-            return self._draft_token_ids, self.input_batch.req_ids
+            draft_token_ids = [
+                [t for t in tokens if t >= 0] for tokens in self._draft_token_ids
+            ]
+            return draft_token_ids, self.input_batch.req_ids
         req_ids = self._draft_token_req_ids
         if req_ids is None:
             return [], []
@@ -5036,9 +5039,13 @@ class GPUModelRunner(
         self.draft_token_ids_event.synchronize()
         assert isinstance(self._draft_token_ids, torch.Tensor)
         num_spec_tokens = self._draft_token_ids.shape[1]
-        return self.draft_token_ids_cpu[
+        raw_token_ids = self.draft_token_ids_cpu[
             : len(req_ids), :num_spec_tokens
-        ].tolist(), req_ids
+        ].tolist()
+        draft_token_ids = [
+            [t for t in tokens if t >= 0] for tokens in raw_token_ids
+        ]
+        return draft_token_ids, req_ids
 
     def _copy_valid_sampled_token_count(
         self, next_token_ids: torch.Tensor, valid_sampled_tokens_count: torch.Tensor

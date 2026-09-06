@@ -12,12 +12,15 @@ In current speculative decoding setups with draft models (Eagle, DraftModel, MTP
 ### Proposed Changes
 1. **`SpeculativeConfig`**:
    - Added `draft_token_acceptance_threshold: float | None = None` to specify the minimum draft confidence threshold (in `[0.0, 1.0]`).
+   - Added `draft_token_acceptance_mode: AdaptiveProposalMode = "cumulative"` supporting:
+     - `"token_threshold"`: Evaluates marginal per-token probabilities ($p_i \ge \tau$).
+     - `"cumulative"`: Evaluates joint prefix survival probability ($\prod_{j=1}^i p_j \ge \tau$).
+     - `"cudagraph_aligned"`: Joint prefix survival snapped up to the nearest CUDA graph bucket boundary for zero marginal verification overhead.
    - Added `uses_adaptive_proposal_length() -> bool` helper.
-   - Added validation enforcing threshold bounds.
+   - Added validation enforcing threshold bounds and supported modes.
 
 2. **`vllm.v1.spec_decode.utils`**:
-   - Added `compute_adaptive_valid_draft_tokens(confidences, threshold)` to compute per-request valid draft counts and boolean mask using vectorized cumulative product logic on GPU without host-device synchronization:
-     $$\text{valid\_k}_i = \sum_{s=0}^{K-1} \prod_{j=0}^{s} \mathbb{I}(p_{i, j} \ge \text{threshold})$$
+   - Added `compute_adaptive_valid_draft_tokens(confidences, threshold, mode="cumulative", cudagraph_buckets=None)` to compute per-request valid draft counts and boolean mask using vectorized GPU logic without host-device synchronization.
 
 3. **`LLMBaseProposer` (`vllm.v1.spec_decode.llm_base_proposer`)**:
    - Extended draft sampling (`_sample_draft_tokens_with_confidence`) to track top-1 / sampled token confidence across draft steps when thresholding is enabled.

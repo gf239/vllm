@@ -310,6 +310,20 @@ class Sampler:
         # Sample the next token.
         if use_flashinfer:
             sampled = flashinfer_sample(processed_logits, top_k, top_p).to(torch.int64)
+        elif self.sampling_states.all_greedy(idx_mapping_np):
+            # Every request is greedy, so gumbel_sample() degenerates to a plain
+            # argmax (see gumbel_noised_argmax: at temp 0 it applies neither the
+            # temperature division nor the noise). Call torch.argmax directly to
+            # replace the Triton kernel + argmax + gather with a single kernel.
+            #
+            # top-k/top-p masking cannot change which token is the maximum, so it
+            # is only needed when processed_logits itself is consumed downstream:
+            # for logprobs, or for the sampling mask.
+            if (return_logprobs or self.return_sampling_mask) and (
+                top_k is not None or top_p is not None
+            ):
+                processed_logits = apply_top_k_top_p(processed_logits, top_k, top_p)
+            sampled = torch.argmax(processed_logits, dim=-1)
         else:
             processed_logits = apply_top_k_top_p(processed_logits, top_k, top_p)
             sampled = gumbel_sample(

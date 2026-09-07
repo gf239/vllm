@@ -64,6 +64,20 @@ class Sampler:
         self.use_flashinfer = (
             not return_sampling_mask and flashinfer_sampler_supported()
         )
+        # Constant results of get_num_sampled_and_rejected() for a pure-decode
+        # step: one sampled token per request, nothing rejected. Preallocated so
+        # the decode path costs neither an allocation nor a kernel launch.
+        # int32 matches InputBuffers.seq_lens, which the kernel path derives its
+        # output dtype from via new_ones().
+        # Read-only: sliced and handed out, never written to. Every consumer
+        # (_post_update_kernel, the speculator kernels, the PP broadcast in
+        # gpu/pp_utils.py) only loads from them.
+        self._decode_num_sampled = torch.ones(
+            max_num_reqs, dtype=torch.int32, device=device
+        )
+        self._decode_num_rejected = torch.zeros(
+            max_num_reqs, dtype=torch.int32, device=device
+        )
 
     def add_request(
         self, req_idx: int, prompt_len: int, sampling_params: SamplingParams
@@ -176,13 +190,22 @@ class Sampler:
         # 1 sampled token per request, except chunked-prefill requests
         # (seq_len < prefill_len) which aren't done prefilling and produce no
         # output token. num_rejected is always 0 here (one logit per request).
-        num_sampled, num_rejected = get_num_sampled_and_rejected(
-            input_batch.seq_lens.new_ones(input_batch.num_reqs),
-            input_batch.seq_lens,
-            input_batch.cu_num_logits,
-            input_batch.idx_mapping,
-            self.req_states.prefill_len.gpu,
-        )
+        if input_batch.has_prefill:
+            num_sampled, num_rejected = get_num_sampled_and_rejected(
+                input_batch.seq_lens.new_ones(input_batch.num_reqs),
+                input_batch.seq_lens,
+                input_batch.cu_num_logits,
+                input_batch.idx_mapping,
+                self.req_states.prefill_len.gpu,
+            )
+        else:
+            # has_prefill is any(num_computed_prefill_tokens < prefill_len),
+            # evaluated before the step runs, and seq_len only grows. So when it
+            # is False the kernel's is_chunked_prefilling predicate is false for
+            # every request, and its output is exactly ones/zeros.
+            num_reqs = input_batch.num_reqs
+            num_sampled = self._decode_num_sampled[:num_reqs]
+            num_rejected = self._decode_num_rejected[:num_reqs]
 
         sampling_mask_tensors = None
         if self.return_sampling_mask:

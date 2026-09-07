@@ -347,6 +347,11 @@ class Sampler:
             # top-k/top-p masking cannot change which token is the maximum, so it
             # is only needed when processed_logits itself is consumed downstream:
             # for logprobs, or for the sampling mask.
+            #
+            # Defensive as it stands: SamplingParams resets top_k to 0 and top_p
+            # to 1.0 for a greedy request, so an all-greedy batch reaches this
+            # with both already None. The guard keeps the fast path and the
+            # gumbel path returning the same tensor if that ever changes.
             if (return_logprobs or self.return_sampling_mask) and (
                 top_k is not None or top_p is not None
             ):

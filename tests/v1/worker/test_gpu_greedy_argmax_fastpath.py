@@ -89,23 +89,47 @@ def test_greedy_fast_path_matches_gumbel_path():
     assert fast_sampled.dtype == torch.int64
 
 
-def test_greedy_fast_path_filters_logits_for_sampling_mask():
-    """processed_logits feeds SamplingMaskTensors even without logprobs.
+def test_greedy_batches_carry_no_top_k_or_top_p():
+    """SamplingParams strips top-k/top-p from a greedy request, so an all-greedy
+    batch never reaches the masking branch of the fast path at all."""
+    params = SamplingParams(temperature=0.0, top_k=4, top_p=0.9)
+    assert params.top_k == 0
+    assert params.top_p == 1.0
 
-    Regression test: the fast path may only skip top-k/top-p when nothing
-    downstream consumes processed_logits. torch.argmax is unaffected by the
-    masking, but the returned tensor is not.
+    sampler = _make_sampler()
+    for i in range(2):
+        sampler.add_request(i, 1, params)
+    idx_mapping_np = np.arange(2, dtype=np.int32)
+    top_k, top_p = sampler.sampling_states.get_top_k_top_p(
+        torch.from_numpy(idx_mapping_np).to(DEVICE, torch.int64), idx_mapping_np
+    )
+    assert top_k is None
+    assert top_p is None
+
+
+def test_fast_path_filters_logits_when_a_mask_consumer_needs_them():
+    """The fast path skips top-k/top-p for sampling, since masking cannot move
+    the argmax, but processed_logits is also returned -- to logprobs, and to
+    SamplingMaskTensors when return_sampling_mask is set. Guarding on
+    return_logprobs alone would hand back unfiltered logits there.
+
+    Reaching this through SamplingParams is impossible today (see
+    test_greedy_batches_carry_no_top_k_or_top_p), so the state is set directly.
+    The guard is defensive: it keeps the fast path and the gumbel path
+    returning the same tensor if that normalization ever changes.
     """
     torch.manual_seed(0)
     logits = torch.randn(2, VOCAB_SIZE, dtype=torch.float32, device=DEVICE)
 
     sampler = _make_sampler(return_sampling_mask=True)
     for i in range(2):
-        sampler.add_request(i, 1, SamplingParams(temperature=0.0, top_k=4))
+        sampler.add_request(i, 1, SamplingParams(temperature=0.0))
+    # Re-introduce top_k behind SamplingParams' back.
+    sampler.sampling_states.top_k.np[:2] = 4
+    sampler.sampling_states.top_k.copy_to_uva()
+
     sampled, processed_logits = _sample(sampler, logits.clone(), return_logprobs=False)
 
-    # top_k=4 must have masked everything outside the top 4 logits per row.
     kept = torch.isfinite(processed_logits).sum(dim=-1)
     assert torch.equal(kept, torch.full_like(kept, 4))
-    # ...and the argmax is unchanged by that masking.
     assert torch.equal(sampled, logits.argmax(dim=-1))

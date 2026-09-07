@@ -36,6 +36,14 @@ class InputBuffers:
         self.dcp_local_seq_lens = torch.zeros(
             max_num_reqs, dtype=torch.int32, device=device
         )
+        # Read-only scratch buffers, sliced and handed to the sampler each step
+        # instead of re-running arange/zeros on the device. Consumers must only
+        # ever load from them (they are shared across steps and across requests),
+        # which the Triton kernels in this file and in gpu/sample/ do.
+        self.cached_arange = torch.arange(
+            max_num_reqs + 1, dtype=torch.int32, device=device
+        )
+        self.cached_zeros = torch.zeros(max_num_reqs, dtype=torch.int32, device=device)
 
 
 @dataclass

@@ -179,3 +179,37 @@ def test_query_start_loc_decode_shortcut(num_reqs: int):
 
     assert np.array_equal(shortcut, cumsum)
     assert np.all(np.diff(shortcut) >= 0)
+
+
+def _fill_query_start_loc(buf, num_scheduled, cached_arange_np):
+    """Mirror of the prepare_inputs block that writes query_start_loc_np."""
+    num_reqs = len(num_scheduled)
+    num_tokens = int(sum(num_scheduled))
+    if num_tokens == num_reqs:
+        buf[: num_reqs + 1] = cached_arange_np[: num_reqs + 1]
+    else:
+        buf[0] = 0
+        np.cumsum(np.asarray(num_scheduled, dtype=np.int32), out=buf[1 : num_reqs + 1])
+    buf[num_reqs + 1 :] = num_tokens
+    return buf
+
+
+def test_reused_query_start_loc_leaves_no_stale_entries():
+    """query_start_loc_np is reused across steps, so a large batch must not
+    leave values behind that a later, smaller batch would expose."""
+    max_num_reqs = 8
+    cached_arange_np = np.arange(max_num_reqs + 1, dtype=np.int32)
+    reused = np.empty(max_num_reqs + 1, dtype=np.int32)
+
+    # A wide, ragged batch first...
+    _fill_query_start_loc(reused, [7, 3, 5, 2, 9, 1, 4, 6], cached_arange_np)
+    # ...then a narrow decode batch reusing the same memory.
+    _fill_query_start_loc(reused, [1, 1], cached_arange_np)
+
+    fresh = _fill_query_start_loc(
+        np.empty(max_num_reqs + 1, dtype=np.int32), [1, 1], cached_arange_np
+    )
+
+    assert np.array_equal(reused, fresh)
+    # FlashAttention requires a non-decreasing query_start_loc.
+    assert np.all(np.diff(reused) >= 0)

@@ -1271,7 +1271,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Get query_start_loc.
         # num_reqs_padded is None for PIECEWISE graphs (no request padding needed)
         num_reqs_padded = batch_desc.num_reqs or num_reqs
-        query_start_loc_np = np.empty(self.max_num_reqs + 1, dtype=np.int32)
+        query_start_loc_np = self.input_buffers.query_start_loc_np
         if num_tokens == num_reqs:
             # Every request has exactly one scheduled token (num_scheduled >= 1
             # per request, and they sum to num_reqs), so the cumulative sum is

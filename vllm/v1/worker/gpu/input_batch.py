@@ -39,6 +39,13 @@ class InputBuffers:
         # Host counterpart of cached_arange, for the numpy-side index arrays
         # built every step. Read-only, for the same reason.
         self.cached_arange_np = np.arange(max_num_reqs + 1, dtype=np.int32)
+        # Scratch for prepare_inputs, rewritten in full every step (prefix sums
+        # up to num_reqs, then padded to num_tokens). Unlike cached_arange_np
+        # this one is mutable, which is safe because prepare_inputs runs once
+        # per step and nothing outlives the step: InputBatch is a local, the
+        # ubatch split copies via np.clip, and async_copy_to_gpu's pin_memory()
+        # stages into its own buffer, so the pending H2D never reads this array.
+        self.query_start_loc_np = np.empty(max_num_reqs + 1, dtype=np.int32)
         # Read-only scratch buffers, sliced and handed to the sampler each step
         # instead of re-running arange/zeros on the device. Consumers must only
         # ever load from them (they are shared across steps and across requests),

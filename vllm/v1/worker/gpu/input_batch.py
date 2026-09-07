@@ -36,6 +36,9 @@ class InputBuffers:
         self.dcp_local_seq_lens = torch.zeros(
             max_num_reqs, dtype=torch.int32, device=device
         )
+        # Host counterpart of cached_arange, for the numpy-side index arrays
+        # built every step. Read-only, for the same reason.
+        self.cached_arange_np = np.arange(max_num_reqs + 1, dtype=np.int32)
         # Read-only scratch buffers, sliced and handed to the sampler each step
         # instead of re-running arange/zeros on the device. Consumers must only
         # ever load from them (they are shared across steps and across requests),

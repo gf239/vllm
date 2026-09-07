@@ -134,3 +134,48 @@ def test_slice_matches_gather_on_hidden_states():
 
     assert _predicate(_Batch(logits_indices.shape[0], num_tokens))
     assert torch.equal(hidden_states[:num_tokens], hidden_states[logits_indices])
+
+
+# --------------------------------------------------------------------------
+# Host-side index arrays built from InputBuffers.cached_arange_np.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("num_reqs", [1, 3, 8])
+def test_cached_arange_np_matches_np_arange(num_reqs: int):
+    """cu_num_logits_np is served as a slice of a preallocated arange."""
+    max_num_reqs = 8
+    cached_arange_np = np.arange(max_num_reqs + 1, dtype=np.int32)
+
+    served = cached_arange_np[: num_reqs + 1]
+    expected = np.arange(num_reqs + 1, dtype=np.int32)
+
+    assert np.array_equal(served, expected)
+    assert served.dtype == expected.dtype
+    # A view, not a copy: that is the point, and it is why the buffer must
+    # stay read-only.
+    assert served.base is cached_arange_np
+
+
+@pytest.mark.parametrize("num_reqs", [1, 3, 8])
+def test_query_start_loc_decode_shortcut(num_reqs: int):
+    """With one token per request, cumsum over ones is exactly the arange.
+
+    Mirrors prepare_inputs: fill [0, num_reqs], then pad the tail with
+    num_tokens so the result stays non-decreasing for FA3.
+    """
+    max_num_reqs = 8
+    num_tokens = num_reqs  # the condition prepare_inputs branches on
+    cached_arange_np = np.arange(max_num_reqs + 1, dtype=np.int32)
+
+    shortcut = np.empty(max_num_reqs + 1, dtype=np.int32)
+    shortcut[: num_reqs + 1] = cached_arange_np[: num_reqs + 1]
+    shortcut[num_reqs + 1 :] = num_tokens
+
+    cumsum = np.empty(max_num_reqs + 1, dtype=np.int32)
+    cumsum[0] = 0
+    np.cumsum(np.ones(num_reqs, dtype=np.int32), out=cumsum[1 : num_reqs + 1])
+    cumsum[num_reqs + 1 :] = num_tokens
+
+    assert np.array_equal(shortcut, cumsum)
+    assert np.all(np.diff(shortcut) >= 0)

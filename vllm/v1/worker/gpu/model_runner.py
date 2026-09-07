@@ -1228,8 +1228,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # No draft token scheduled (common case).
             total_num_draft_tokens = 0
             total_num_logits = num_reqs
-            cu_num_logits_np = np.arange(num_reqs + 1, dtype=np.int32)
             # Read-only views; see InputBuffers.cached_arange / cached_zeros.
+            cu_num_logits_np = self.input_buffers.cached_arange_np[: num_reqs + 1]
             cu_num_logits = self.input_buffers.cached_arange[: num_reqs + 1]
             expanded_idx_mapping = idx_mapping
             expanded_local_pos = self.input_buffers.cached_zeros[:num_reqs]
@@ -1272,8 +1272,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # num_reqs_padded is None for PIECEWISE graphs (no request padding needed)
         num_reqs_padded = batch_desc.num_reqs or num_reqs
         query_start_loc_np = np.empty(self.max_num_reqs + 1, dtype=np.int32)
-        query_start_loc_np[0] = 0
-        np.cumsum(num_scheduled_tokens_np, out=query_start_loc_np[1 : num_reqs + 1])
+        if num_tokens == num_reqs:
+            # Every request has exactly one scheduled token (num_scheduled >= 1
+            # per request, and they sum to num_reqs), so the cumulative sum is
+            # just 0..num_reqs. Copying it beats running cumsum over ones.
+            query_start_loc_np[: num_reqs + 1] = self.input_buffers.cached_arange_np[
+                : num_reqs + 1
+            ]
+        else:
+            query_start_loc_np[0] = 0
+            np.cumsum(num_scheduled_tokens_np, out=query_start_loc_np[1 : num_reqs + 1])
         # Pad for full CUDA graph mode.
         # Some attention backends like FA3 require query_start_loc to be non-decreasing.
         query_start_loc_np[num_reqs + 1 :] = num_tokens

@@ -1045,15 +1045,9 @@ class FlashAttentionImpl(AttentionImpl):
             block_table = attn_metadata.block_table
             scheduler_metadata = attn_metadata.scheduler_metadata
 
-            descale_shape = (cu_seqlens_q.shape[0] - 1, self.num_kv_heads)
-
-            q_descale = (
-                layer._q_scale.expand(descale_shape)
-                if self.supports_quant_query_input
-                else None
+            q_descale, k_descale, v_descale = self._get_descales(
+                layer, num_seqs=cu_seqlens_q.shape[0] - 1
             )
-            k_descale = layer._k_scale.expand(descale_shape)
-            v_descale = layer._v_scale.expand(descale_shape)
 
             if self.dcp_world_size > 1:
                 self._forward_with_dcp(
@@ -1430,6 +1424,35 @@ class FlashAttentionImpl(AttentionImpl):
             query_lse,
         )
 
+    def _get_descales(
+        self, layer: torch.nn.Module, num_seqs: int
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+        """Per-sequence descales for the FlashAttention call, or None.
+
+        Descales are only meaningful for an FP8 KV cache: FA2's C++ interface
+        does not take them for unquantized tensors, and FA4's python wrapper
+        drops them whenever v.dtype is not FP8. The query follows the cache --
+        it is quantized in the attention layer only when the cache is -- so all
+        three are gated on the same predicate.
+
+        Returning None early also skips the expand() calls, which would
+        otherwise build 2-3 views per layer per step for unquantized models.
+        """
+        if not is_quantized_kv_cache(self.kv_cache_dtype):
+            return None, None, None
+
+        descale_shape = (num_seqs, self.num_kv_heads)
+        q_descale = (
+            layer._q_scale.expand(descale_shape)
+            if self.supports_quant_query_input
+            else None
+        )
+        return (
+            q_descale,
+            layer._k_scale.expand(descale_shape),
+            layer._v_scale.expand(descale_shape),
+        )
+
     def _forward_encoder_attention(
         self,
         query: torch.Tensor,
@@ -1464,12 +1487,6 @@ class FlashAttentionImpl(AttentionImpl):
         cu_seqlens_k = attn_metadata.query_start_loc
         max_seqlen_q = attn_metadata.max_query_len
         max_seqlen_k = attn_metadata.max_query_len
-
-        descale_shape = (
-            cu_seqlens_q.shape[0] - 1,  # type: ignore[union-attr]
-            self.num_kv_heads,
-        )
-
         # Call flash attention directly on Q, K, V tensors
         sliding_window_size = (
             list(self.sliding_window) if self.sliding_window is not None else None
@@ -1489,11 +1506,9 @@ class FlashAttentionImpl(AttentionImpl):
             window_size=sliding_window_size,
             softcap=self.logits_soft_cap,
             fa_version=self.vllm_flash_attn_version,
-            q_descale=layer._q_scale.expand(descale_shape)  # type: ignore[operator]
-            if self.supports_quant_query_input
-            else None,
-            k_descale=layer._k_scale.expand(descale_shape),  # type: ignore[operator]
-            v_descale=layer._v_scale.expand(descale_shape),  # type: ignore[operator]
+            q_descale=None,
+            k_descale=None,
+            v_descale=None,
             # The hd256 kernel does not support SplitKV.
             num_splits=1 if self.batch_invariant_enabled or self.fa4_hd256 else 0,
             s_aux=self.sinks,

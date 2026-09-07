@@ -36,6 +36,12 @@ class InputBuffers:
         self.dcp_local_seq_lens = torch.zeros(
             max_num_reqs, dtype=torch.int32, device=device
         )
+        self.cached_arange = torch.arange(
+            max_num_reqs + 1, dtype=torch.int32, device=device
+        )
+        self.cached_zeros = torch.zeros(
+            max_num_reqs, dtype=torch.int32, device=device
+        )
 
 
 @dataclass

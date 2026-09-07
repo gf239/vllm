@@ -114,6 +114,11 @@ class SamplingStates:
     def any_greedy(self, idx_mapping_np: np.ndarray) -> bool:
         return bool(np.any(self.temperature.np[idx_mapping_np] == 0.0))
 
+    def all_greedy(self, idx_mapping_np: np.ndarray) -> bool:
+        return len(idx_mapping_np) > 0 and bool(
+            np.all(self.temperature.np[idx_mapping_np] == 0.0)
+        )
+
     def any_explicit_seed(self, idx_mapping_np: np.ndarray) -> bool:
         return bool(np.any(self.seeds_set[idx_mapping_np]))
 

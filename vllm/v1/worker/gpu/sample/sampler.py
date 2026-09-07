@@ -310,6 +310,10 @@ class Sampler:
         # Sample the next token.
         if use_flashinfer:
             sampled = flashinfer_sample(processed_logits, top_k, top_p).to(torch.int64)
+        elif self.sampling_states.all_greedy(idx_mapping_np):
+            if return_logprobs and (top_k is not None or top_p is not None):
+                processed_logits = apply_top_k_top_p(processed_logits, top_k, top_p)
+            sampled = torch.argmax(processed_logits, dim=-1)
         else:
             processed_logits = apply_top_k_top_p(processed_logits, top_k, top_p)
             sampled = gumbel_sample(

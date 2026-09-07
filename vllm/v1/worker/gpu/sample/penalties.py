@@ -42,6 +42,11 @@ class PenaltiesState:
         )
 
         self._new_penalties_reqs: list[int] = []
+        # Number of slots whose last occupant used penalties. This is a slot
+        # count, not a live-request count: there is no remove_request here, so a
+        # finished request keeps its slot marked until another request takes it.
+        # That only ever errs towards doing the work, never towards skipping it.
+        self.num_penalty_slots = 0
 
     def add_request(self, req_idx: int, sampling_params: SamplingParams) -> None:
         self.repetition_penalty.np[req_idx] = sampling_params.repetition_penalty
@@ -49,6 +54,9 @@ class PenaltiesState:
         self.presence_penalty.np[req_idx] = sampling_params.presence_penalty
 
         do_penalty = use_penalty(sampling_params)
+        # Maintain the count as a delta, since this overwrites whatever the
+        # previous occupant of the slot left behind.
+        self.num_penalty_slots += int(do_penalty) - int(self.use_penalty[req_idx])
         self.use_penalty[req_idx] = do_penalty
         if do_penalty:
             self._new_penalties_reqs.append(req_idx)

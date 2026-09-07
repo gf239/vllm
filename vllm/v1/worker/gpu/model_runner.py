@@ -1536,11 +1536,18 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         query_start_loc: torch.Tensor | None = None,
     ) -> None:
         # Update the number of computed tokens.
+        output_bin_counts = None
         if self.is_last_pp_rank:
             assert self.sampler is not None
-            output_bin_counts = self.sampler.penalties_state.output_bin_counts
-        else:
-            output_bin_counts = None
+            penalties_state = self.sampler.penalties_state
+            # The counts are read only by the penalties kernel. With no slot
+            # holding a penalty request there is nothing to feed, and
+            # _post_update_kernel skips the per-token read-modify-write when the
+            # pointer is None. A slot that later takes a penalty request has its
+            # row rebuilt from all_token_ids by bincount() in
+            # PenaltiesState.apply_staged_writes, so nothing is lost by pausing.
+            if penalties_state.num_penalty_slots:
+                output_bin_counts = penalties_state.output_bin_counts
         post_update(
             idx_mapping,
             self.req_states.num_computed_tokens.gpu,

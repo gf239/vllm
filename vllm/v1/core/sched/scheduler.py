@@ -781,9 +781,16 @@ class Scheduler(SchedulerInterface):
 
         # Next, schedule the WAITING requests.
         if not preempted_reqs and self._pause_state == PauseState.UNPAUSED:
-            step_skipped_waiting = create_request_queue(self.policy)
+            # Only needed if the loop below actually runs; in steady-state
+            # decode both queues are empty and it never does. The condition is
+            # the loop's own, and nothing between here and there touches it, so
+            # the queue exists whenever the body executes.
+            step_skipped_waiting = None
+            if (self.waiting or self.skipped_waiting) and token_budget > 0:
+                step_skipped_waiting = create_request_queue(self.policy)
 
             while (self.waiting or self.skipped_waiting) and token_budget > 0:
+                assert step_skipped_waiting is not None
                 if input_budget <= draft_slots:
                     break
                 # Paused streaming sessions (WAITING_FOR_STREAMING_REQ) are not

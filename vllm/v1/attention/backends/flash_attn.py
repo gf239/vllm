@@ -1015,20 +1015,22 @@ class FlashAttentionImpl(AttentionImpl):
         # Fix degenerate strides on size-1 dims (e.g. num_kv_heads=1 with TP).
         # FA3/4 on H100+ uses TMA, which requires ≥16-byte stride alignment.
         # See vllm.utils.torch_utils.canonicalize_singleton_dim_strides.
-        fixed_k = canonicalize_singleton_dim_strides(key_cache)
-        fixed_v = canonicalize_singleton_dim_strides(value_cache)
-        if fixed_k is not key_cache or fixed_v is not value_cache:
-            logger.debug(
-                "Canonicalized degenerate KV cache strides (FlashAttention): "
-                "shape=%s, key strides before=%s after=%s, "
-                "value strides before=%s after=%s",
-                key_cache.shape,
-                key_cache.stride(),
-                fixed_k.stride(),
-                value_cache.stride(),
-                fixed_v.stride(),
-            )
-        key_cache, value_cache = fixed_k, fixed_v
+        # Skip this check on SM < 90 (e.g. RTX 4090) where TMA hardware is not present.
+        if current_platform.has_device_capability(90):
+            fixed_k = canonicalize_singleton_dim_strides(key_cache)
+            fixed_v = canonicalize_singleton_dim_strides(value_cache)
+            if fixed_k is not key_cache or fixed_v is not value_cache:
+                logger.debug(
+                    "Canonicalized degenerate KV cache strides (FlashAttention): "
+                    "shape=%s, key strides before=%s after=%s, "
+                    "value strides before=%s after=%s",
+                    key_cache.shape,
+                    key_cache.stride(),
+                    fixed_k.stride(),
+                    value_cache.stride(),
+                    fixed_v.stride(),
+                )
+            key_cache, value_cache = fixed_k, fixed_v
 
         if is_quantized_kv_cache(self.kv_cache_dtype):
             # queries are quantized in the attention layer
